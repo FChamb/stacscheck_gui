@@ -9,15 +9,41 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:stacscheck-gui.runTests"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "stacscheck-gui.helloWorld",
-        "title": "Hello World"
+        "command": "stacscheck-gui.runTests",
+        "title": "stacscheck-gui: Run Tests",
+        "category": "stacscheck-gui",
+        "icon": "$(play)"
+      },
+      {
+        "command": "stacscheck-gui.selectDirectory",
+        "title": "Select Test Directory",
+        "icon": "$(folder-opened)"
       }
-    ]
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "stacscheck-explorer",
+          "title": "stacscheck",
+          "icon": "$(beaker)"
+        }
+      ]
+    },
+    "views": {
+      "stacscheck-explorer": [
+        {
+          "id": "stacscheckView",
+          "name": "stacscheck Tests"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
