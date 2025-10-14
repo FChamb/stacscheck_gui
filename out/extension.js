@@ -41,19 +41,32 @@ class StacscheckTreeItem extends vscode.TreeItem {
     label;
     collapsibleState;
     command;
-    constructor(label, collapsibleState, command) {
+    details;
+    constructor(label, collapsibleState, command, details) {
         super(label, collapsibleState);
         this.label = label;
         this.collapsibleState = collapsibleState;
         this.command = command;
+        this.details = details;
+        if (label.includes(': pass')) {
+            this.iconPath = new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('testing.iconPassed'));
+        }
+        else if (label.includes(': fail')) {
+            this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('testing.iconFailed'));
+        }
     }
 }
 class StacscheckTreeProvider {
     _onDidChangeTreeData = new vscode.EventEmitter();
     onDidChangeTreeData = this._onDidChangeTreeData.event;
     selectedDirectory;
+    testResults = [];
     refresh() {
         this._onDidChangeTreeData.fire();
+    }
+    setTestResults(results) {
+        this.testResults = results;
+        this.refresh();
     }
     getTreeItem(element) {
         return element;
@@ -63,6 +76,13 @@ class StacscheckTreeProvider {
         this.refresh();
     }
     getChildren(element) {
+        if (element) {
+            // If the element has details, return them as child items
+            if (element.details) {
+                return Promise.resolve(element.details.map(detail => new StacscheckTreeItem(detail, vscode.TreeItemCollapsibleState.None)));
+            }
+            return Promise.resolve([]);
+        }
         const items = [];
         // Add "Select Directory" button
         const selectButton = new StacscheckTreeItem('Select Test Directory', vscode.TreeItemCollapsibleState.None, {
@@ -85,6 +105,17 @@ class StacscheckTreeProvider {
             });
             runButton.iconPath = new vscode.ThemeIcon('play');
             items.push(runButton);
+            // Add test results if available
+            this.testResults.forEach((test, index) => {
+                if (test.type === 'summary') {
+                    const summaryItem = new StacscheckTreeItem(test.details[0], vscode.TreeItemCollapsibleState.None);
+                    items.push(summaryItem);
+                }
+                else {
+                    const testItem = new StacscheckTreeItem(`Test ${index + 1}: ${test.type} - ${test.name} : ${test.result}`, vscode.TreeItemCollapsibleState.Collapsed, undefined, test.details);
+                    items.push(testItem);
+                }
+            });
         }
         return Promise.resolve(items);
     }
@@ -152,16 +183,68 @@ function activate(context) {
             }
             // Log the output even if successful
             console.log('stacscheck output:', stdout);
-            const panel = vscode.window.createWebviewPanel('stacscheckResults', 'stacscheck Results', vscode.ViewColumn.One, { enableScripts: true });
-            const formattedOutput = stdout
-                .replace(/\n/g, '<br>')
-                .replace(/\s/g, '&nbsp;');
-            panel.webview.html = getWebviewContent(formattedOutput);
+            // Parse the output and update the tree view
+            const { tests } = parseStacscheckOutput(stdout);
+            treeDataProvider.setTestResults(tests);
         });
     });
     context.subscriptions.push(runTestsCommand);
 }
+function parseStacscheckOutput(output) {
+    const lines = output.split('\n');
+    const tests = [];
+    const header = [];
+    let currentTest = null;
+    lines.forEach(line => {
+        if (line.startsWith('* ')) {
+            // This is a test line
+            const match = line.match(/\* (.*?) - (.*?) : (pass|fail)/);
+            if (match) {
+                currentTest = {
+                    type: match[1],
+                    name: match[2],
+                    result: match[3],
+                    details: [line]
+                };
+                tests.push(currentTest);
+            }
+        }
+        else if (line.match(/^\d+ out of \d+ tests passed/)) {
+            // Summary line
+            tests.push({ type: 'summary', details: [line] });
+        }
+        else if (currentTest) {
+            // Additional details for the current test
+            currentTest.details.push(line);
+        }
+        else {
+            // Header information
+            header.push(line);
+        }
+    });
+    return { header, tests };
+}
 function getWebviewContent(returnHtml) {
+    const { header, tests } = parseStacscheckOutput(returnHtml);
+    const headerHtml = header.join('<br>');
+    const testsHtml = tests.map((test, index) => {
+        if (test.type === 'summary') {
+            return `<div class="summary">${test.details.join('<br>')}</div>`;
+        }
+        const icon = test.result === 'pass' ?
+            '<span class="icon pass">✓</span>' :
+            '<span class="icon fail">✗</span>';
+        return `
+            <div class="test-item">
+                <button class="collapsible ${test.result}">
+                    ${icon} Test ${index + 1}: ${test.name}
+                </button>
+                <div class="content">
+                    <pre>${test.details.join('\n')}</pre>
+                </div>
+            </div>
+        `;
+    }).join('');
     return `
         <!DOCTYPE html>
         <html lang="en">
@@ -171,22 +254,86 @@ function getWebviewContent(returnHtml) {
             <title>stacscheck Results</title>
             <style>
                 body {
-                    font-family: monospace;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
                     background-color: #1e1e1e;
                     color: #d4d4d4;
                     padding: 1em;
+                    line-height: 1.5;
                 }
-                .pass { color: #4caf50; }
-                .fail { color: #f44336; }
+                .test-item {
+                    margin: 8px 0;
+                }
+                .collapsible {
+                    background-color: #252526;
+                    color: #d4d4d4;
+                    cursor: pointer;
+                    padding: 12px;
+                    width: 100%;
+                    border: none;
+                    text-align: left;
+                    outline: none;
+                    border-radius: 4px;
+                    display: flex;
+                    align-items: center;
+                    font-size: 14px;
+                }
+                .icon {
+                    margin-right: 8px;
+                    font-weight: bold;
+                }
+                .pass .icon, .icon.pass {
+                    color: #4caf50;
+                }
+                .fail .icon, .icon.fail {
+                    color: #f44336;
+                }
+                .active {
+                    background-color: #2d2d2d;
+                }
+                .content {
+                    padding: 0 18px;
+                    max-height: 0;
+                    overflow: hidden;
+                    transition: max-height 0.2s ease-out;
+                    background-color: #1e1e1e;
+                    border-bottom-left-radius: 4px;
+                    border-bottom-right-radius: 4px;
+                }
+                .content.show {
+                    padding: 12px 18px;
+                    max-height: 500px;
+                }
+                .summary {
+                    margin-top: 16px;
+                    padding: 12px;
+                    background-color: #252526;
+                    border-radius: 4px;
+                }
                 pre {
                     white-space: pre-wrap;
                     word-wrap: break-word;
+                    margin: 8px 0;
+                    font-family: monospace;
                 }
             </style>
         </head>
         <body>
             <h2>stacscheck Results</h2>
-            <pre>${returnHtml}</pre>
+            <div class="header">
+                ${headerHtml}
+            </div>
+            <div class="tests">
+                ${testsHtml}
+            </div>
+            <script>
+                document.querySelectorAll('.collapsible').forEach(button => {
+                    button.addEventListener('click', function() {
+                        this.classList.toggle('active');
+                        const content = this.nextElementSibling;
+                        content.classList.toggle('show');
+                    });
+                });
+            </script>
         </body>
         </html>
     `;
