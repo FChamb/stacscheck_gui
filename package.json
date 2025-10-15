@@ -1,8 +1,13 @@
 {
   "name": "stacscheck-gui",
-  "displayName": "stacscheck_gui",
-  "description": "A graphical user interface in the form of a VSCode extension for the use of stacscheck",
+  "displayName": "stacscheck GUI",
+  "description": "A graphical user interface in VS Code for running stacscheck tests",
   "version": "0.0.1",
+  "publisher": "FChamb",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FChamb/stacscheck_gui"
+  },
   "engines": {
     "vscode": "^1.104.0"
   },
@@ -54,14 +59,15 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.104.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/vscode": "^1.104.0",
     "@typescript-eslint/eslint-plugin": "^8.42.0",
     "@typescript-eslint/parser": "^8.42.0",
-    "eslint": "^9.34.0",
-    "typescript": "^5.9.2",
     "@vscode/test-cli": "^0.0.11",
-    "@vscode/test-electron": "^2.5.2"
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.2",
+    "eslint": "^9.34.0",
+    "typescript": "^5.9.2"
   }
 }

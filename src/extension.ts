@@ -132,14 +132,18 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register the select directory command
     let selectDirCommand = vscode.commands.registerCommand('stacscheck-gui.selectDirectory', async () => {
+        const defaultUri = vscode.workspace.workspaceFolders?.[0]?.uri 
+            || vscode.Uri.file(require('os').homedir());
+
         const folderUris = await vscode.window.showOpenDialog({
             canSelectMany: false,
             canSelectFiles: false,
             canSelectFolders: true,
             openLabel: 'Select stacscheck test folder',
-            title: 'Select the directory containing your test files'
+            title: 'Select the directory containing your test files',
+            defaultUri: defaultUri
         });
-
+                
         if (folderUris && folderUris.length > 0) {
             treeDataProvider.setSelectedDirectory(folderUris[0].fsPath);
         }
@@ -244,9 +248,11 @@ function getWebviewContent(returnHtml: string): string {
     const { header, tests } = parseStacscheckOutput(returnHtml);
     
     const headerHtml = header.join('<br>');
+    let summaryHtml = '';
     const testsHtml = tests.map((test, index) => {
         if (test.type === 'summary') {
-            return `<div class="summary">${test.details.join('<br>')}</div>`;
+            summaryHtml = `<div class="summary">${test.details.join('<br>')}</div>`;
+            return '';
         }
 
         const icon = test.result === 'pass' ? 
@@ -324,10 +330,17 @@ function getWebviewContent(returnHtml: string): string {
                     max-height: 500px;
                 }
                 .summary {
-                    margin-top: 16px;
-                    padding: 12px;
-                    background-color: #252526;
-                    border-radius: 4px;
+                    position: sticky;
+                    bottom: 0;
+                    left: 0;
+                    right: 0;
+                    margin-top: 24px;
+                    padding: 16px;
+                    background-color: #2d2d2d;
+                    border-top: 1px solid #404040;
+                    text-align: center;
+                    font-size: 1.1em;
+                    font-weight: 500;
                 }
                 pre {
                     white-space: pre-wrap;
@@ -335,15 +348,31 @@ function getWebviewContent(returnHtml: string): string {
                     margin: 8px 0;
                     font-family: monospace;
                 }
+                .container {
+                    display: flex;
+                    flex-direction: column;
+                    min-height: 100vh;
+                    margin: 0;
+                    padding: 0;
+                }
+                .content-area {
+                    flex: 1;
+                    padding: 1em;
+                }
             </style>
         </head>
         <body>
-            <h2>stacscheck Results</h2>
-            <div class="header">
-                ${headerHtml}
-            </div>
-            <div class="tests">
-                ${testsHtml}
+            <div class="container">
+                <div class="content-area">
+                    <h2>stacscheck Results</h2>
+                    <div class="header">
+                        ${headerHtml}
+                    </div>
+                    <div class="tests">
+                        ${testsHtml}
+                    </div>
+                </div>
+                ${summaryHtml}
             </div>
             <script>
                 document.querySelectorAll('.collapsible').forEach(button => {
