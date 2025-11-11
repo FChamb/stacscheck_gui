@@ -22,7 +22,7 @@ The goal is to make `stacscheck` easier, faster, and more intuitive to use, espe
   - If not found, prompts you to manually select the correct code directory
 
 - **Persistent settings**
-  - Remembers the last selected test directory between sessions (optional)
+  - Remembers the last selected test directory between sessions
 
 - **CLI Integration**
   - Executes the official `/cs/studres/Library/stacscheck/stacscheck` binary directly from VS Code
