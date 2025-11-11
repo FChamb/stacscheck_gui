@@ -1,71 +1,42 @@
-# stacscheck-gui README
+# stacscheck GUI (VS Code Extension)
 
-This is the README for your extension "stacscheck-gui". After writing up a brief description, we recommend including the following sections.
+**A Visual Interface for the University of St Andrews' _stacscheck_ Tool**
 
-## Features
+This project is a **VS Code extension** developed as part of my 4th-year dissertation project.  
+It provides a graphical interface for running and reviewing results from the `stacscheck` program — a command-line tool used in the School of Computer Science to automatically test student code submissions.
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
-
-For example if there is an image subfolder under your extension project workspace:
-
-\!\[feature X\]\(images/feature-x.png\)
-
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
-
-## Requirements
-
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
-
-## Extension Settings
-
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+The goal is to make `stacscheck` easier, faster, and more intuitive to use, especially for students who prefer working in VS Code rather than the terminal.
 
 ---
 
-## Following extension guidelines
+## Features
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+- **Tree View Interface** in VS Code for running tests
+  - Select a test directory directly from within the IDE
+  - Run tests with a single click (`Run Tests`)
+  - View all test results in an expandable/collapsible tree structure
+  - Colour-coded pass/fail icons using VS Code’s native testing theme
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+- **Automatic working directory detection**
+  - Automatically searches for `src/` or `source/` directories relative to your test folder
+  - If not found, prompts you to manually select the correct code directory
 
-## Working with Markdown
+- **Persistent settings**
+  - Remembers the last selected test directory between sessions (optional)
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+- **CLI Integration**
+  - Executes the official `/cs/studres/Library/stacscheck/stacscheck` binary directly from VS Code
+  - Displays output in the sidebar view
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+---
 
-## For more information
+## Installation
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+### Install from VSIX
 
-**Enjoy!**
+1. Download the latest `.vsix` file
+2. In VS Code:
+   - Open the Extensions panel (`Ctrl+Shift+X` / `Cmd+Shift+X`).
+   - Click the `...` menu → **Install from VSIX...**
+   - Select the `.vsix` file.
+3. The extension will appear as **“stacscheck GUI”** in the activity bar.
