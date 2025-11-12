@@ -69,10 +69,17 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
       items.push(runBtn);
 
       // Results with summary + each test
+      let passCount = 0;
+      let totalTests = 0;
+      
       this.testResults.forEach((t, i) => {
         if (t.type === 'summary') {
           items.push(new StacscheckTreeItem(t.details[0], vscode.TreeItemCollapsibleState.None));
         } else {
+          totalTests++;
+          if (t.result === 'pass') {
+            passCount++;
+          }
           items.push(new StacscheckTreeItem(
             `Test ${i + 1}: ${t.type} - ${t.name} : ${t.result}`,
             vscode.TreeItemCollapsibleState.Collapsed,
@@ -81,6 +88,18 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
           ));
         }
       });
+
+      // Add progress bar after summary
+      if (totalTests > 0) {
+        const progressPercentage = (passCount / totalTests) * 100;
+        const barLength = 20;
+        const filledLength = Math.round((passCount / totalTests) * barLength);
+        const progressBar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
+        const progressLabel = `${progressBar} ${progressPercentage.toFixed(0)}%`;
+        
+        const progressItem = new StacscheckTreeItem(progressLabel, vscode.TreeItemCollapsibleState.None);
+        items.push(progressItem);
+      }
     }
 
     return Promise.resolve(items);
