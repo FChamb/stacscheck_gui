@@ -45,20 +45,19 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
     const items: StacscheckTreeItem[] = [];
 
     // Button: pick test directory
-    items.push(new StacscheckTreeItem(
-      'Select Test Directory',
+    let selectDirLabel = 'Select Test Directory';
+    const selectDirBtn = new StacscheckTreeItem(
+      selectDirLabel,
       vscode.TreeItemCollapsibleState.None,
       { command: 'stacscheck-gui.selectDirectory', title: 'Select Directory', arguments: [] }
-    ));
+    );
+    selectDirBtn.iconPath = new vscode.ThemeIcon('folder-opened');
+    items.push(selectDirBtn);
 
     if (this.selectedDirectory) {
-      // Show selected path
-      const current = new StacscheckTreeItem(
-        `Selected: ${vscode.workspace.asRelativePath(this.selectedDirectory)}`,
-        vscode.TreeItemCollapsibleState.None
-      );
-      current.iconPath = new vscode.ThemeIcon('folder-opened');
-      items.push(current);
+      // Show selected path in description instead
+      const selectDirItem = items[0];
+      selectDirItem.description = vscode.workspace.asRelativePath(this.selectedDirectory);
 
       // Run tests
       const runBtn = new StacscheckTreeItem(
