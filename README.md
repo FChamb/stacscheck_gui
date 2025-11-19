@@ -16,6 +16,9 @@ The goal is to make `stacscheck` easier, faster, and more intuitive to use, espe
   - Run tests with a single click (`Run Tests`)
   - View all test results in an expandable/collapsible tree structure
   - Colour-coded pass/fail icons using VS Code’s native testing theme
+- **Inline test authoring**
+  - Use the `Add Custom Test` action beneath the results list to create new `.in`/`.expected` pairs without leaving VS Code
+  - Provide the test name, stdin to feed to your program, and the output you expect `stacscheck` to verify
 
 - **Automatic working directory detection**
   - Automatically searches for `src/` or `source/` directories relative to your test folder

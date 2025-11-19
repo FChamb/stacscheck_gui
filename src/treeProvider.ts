@@ -100,6 +100,14 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
         const progressItem = new StacscheckTreeItem(progressLabel, vscode.TreeItemCollapsibleState.None);
         items.push(progressItem);
       }
+
+      const addTestItem = new StacscheckTreeItem(
+        'Add Custom Test',
+        vscode.TreeItemCollapsibleState.None,
+        { command: 'stacscheck-gui.addTest', title: 'Add Custom Test', arguments: [] }
+      );
+      addTestItem.iconPath = new vscode.ThemeIcon('diff-added');
+      items.push(addTestItem);
     }
 
     return Promise.resolve(items);

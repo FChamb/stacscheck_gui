@@ -120,6 +120,98 @@ async function resolveWorkingDir(testsDir: string, srcNames: string[]): Promise<
 }
 
 context.subscriptions.push(runTests);
+
+  const addCustomTest = vscode.commands.registerCommand('stacscheck-gui.addTest', async () => {
+    const selectedPath = provider.getSelectedDirectory();
+    if (!selectedPath) {
+      vscode.window.showErrorMessage('Please select a test directory before creating a test.');
+      return;
+    }
+
+    const testName = await vscode.window.showInputBox({
+      title: 'Add stacscheck test',
+      prompt: 'Name for the new test (used as the file name).',
+      placeHolder: 'e.g. factorial_zero',
+      ignoreFocusOut: true,
+      validateInput: value => value.trim() ? undefined : 'A test name is required.'
+    });
+    if (!testName) { return; }
+
+    const testInput = await vscode.window.showInputBox({
+      title: 'Program input',
+      prompt: 'Enter the exact input that should be piped to your program.',
+      placeHolder: 'You can paste multi-line content.',
+      ignoreFocusOut: true,
+      value: ''
+    });
+    if (testInput === undefined) { return; }
+
+    const expectedOutput = await vscode.window.showInputBox({
+      title: 'Expected output',
+      prompt: 'Enter the output your program should print for the provided input.',
+      placeHolder: 'You can paste multi-line content.',
+      ignoreFocusOut: true,
+      value: ''
+    });
+    if (expectedOutput === undefined) { return; }
+
+    try {
+      const { inputPath, expectedPath } = await writeCustomTestFiles(selectedPath, testName, testInput, expectedOutput);
+      vscode.window.showInformationMessage(`Created ${path.basename(inputPath)} and ${path.basename(expectedPath)}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Failed to create test files: ${message}`);
+    }
+  });
+
+  context.subscriptions.push(addCustomTest);
 }
 
 export function deactivate() {}
+
+async function writeCustomTestFiles(targetDir: string, rawName: string, input: string, expected: string) {
+  const baseName = await ensureUniqueBaseName(targetDir, slugify(rawName));
+  const inputPath = path.join(targetDir, `${baseName}.in`);
+  const expectedPath = path.join(targetDir, `${baseName}.expected`);
+
+  await fs.promises.writeFile(inputPath, ensureTrailingNewline(input), 'utf8');
+  await fs.promises.writeFile(expectedPath, ensureTrailingNewline(expected), 'utf8');
+
+  return { inputPath, expectedPath };
+}
+
+async function ensureUniqueBaseName(targetDir: string, base: string) {
+  let candidate = base;
+  let counter = 1;
+  while (
+    await pathExists(path.join(targetDir, `${candidate}.in`)) ||
+    await pathExists(path.join(targetDir, `${candidate}.expected`))
+  ) {
+    candidate = `${base}-${counter++}`;
+  }
+  return candidate;
+}
+
+async function pathExists(filePath: string) {
+  try {
+    await fs.promises.access(filePath, fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function slugify(value: string) {
+  const base = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return base || 'stacscheck-test';
+}
+
+function ensureTrailingNewline(text: string) {
+  if (!text) { return '\n'; }
+  return text.endsWith('\n') ? text : `${text}\n`;
+}

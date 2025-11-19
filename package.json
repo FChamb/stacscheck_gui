@@ -15,7 +15,9 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:stacscheck-gui.runTests"
+    "onCommand:stacscheck-gui.runTests",
+    "onCommand:stacscheck-gui.selectDirectory",
+    "onCommand:stacscheck-gui.addTest"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -30,6 +32,11 @@
         "command": "stacscheck-gui.selectDirectory",
         "title": "Select Test Directory",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "stacscheck-gui.addTest",
+        "title": "Add Custom stacscheck Test",
+        "icon": "$(diff-added)"
       }
     ],
     "viewsContainers": {
