@@ -5,16 +5,17 @@ import { TestResult } from './types';
 
 export class StacscheckTreeItem extends vscode.TreeItem {
   constructor(
-    public readonly label: string,
+    public readonly label: string | vscode.TreeItemLabel,
     public readonly collapsibleState: vscode.TreeItemCollapsibleState,
     public readonly command?: vscode.Command,
-    public readonly details?: string[]
+    public readonly details?: (string | vscode.TreeItemLabel)[]
   ) {
     super(label, collapsibleState);
 
-    if (label.includes(': pass')) {
+    const textLabel = typeof label === 'string' ? label : label.label;
+    if (textLabel.includes(': pass')) {
       this.iconPath = new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('testing.iconPassed'));
-    } else if (label.includes(': fail')) {
+    } else if (textLabel.includes(': fail')) {
       this.iconPath = new vscode.ThemeIcon('error', new vscode.ThemeColor('testing.iconFailed'));
     }
   }
@@ -37,8 +38,9 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
   getChildren(element?: StacscheckTreeItem): Thenable<StacscheckTreeItem[]> {
     // If a test node is expanded, show its raw detail lines as leaf items
     if (element?.details) {
+      const detailEntries = element.details ?? [];
       return Promise.resolve(
-        element.details.map(d => new StacscheckTreeItem(d, vscode.TreeItemCollapsibleState.None))
+        detailEntries.map(d => new StacscheckTreeItem(d, vscode.TreeItemCollapsibleState.None))
       );
     }
 
@@ -84,7 +86,7 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
             `Test ${i + 1}: ${t.type} - ${t.name} : ${t.result}`,
             vscode.TreeItemCollapsibleState.Collapsed,
             undefined,
-            t.details
+            formatTestDetails(t)
           ));
         }
       });
@@ -112,4 +114,157 @@ export class StacscheckTreeProvider implements vscode.TreeDataProvider<Stacschec
 
     return Promise.resolve(items);
   }
+}
+
+function formatTestDetails(test: TestResult): (string | vscode.TreeItemLabel)[] {
+  const rawDetails = test.details ?? [];
+  if (!rawDetails.length || test.result !== 'fail') {
+    return rawDetails;
+  }
+
+  const expectedInfo = findValueLine(rawDetails, expectedPatterns);
+  const actualInfo = findValueLine(rawDetails, actualPatterns);
+
+  if (!expectedInfo || !actualInfo) {
+    return rawDetails;
+  }
+
+  const diff = diffValueSegments(expectedInfo.value, actualInfo.value);
+  if (!diff) {
+    return rawDetails;
+  }
+
+  const highlightMap = new Map<number, [number, number][]>();
+  const expectedRange = translateRange(expectedInfo.range, diff.expected, expectedInfo.value.length);
+  if (expectedRange) {
+    highlightMap.set(expectedInfo.index, [expectedRange]);
+  }
+
+  const actualRange = translateRange(actualInfo.range, diff.actual, actualInfo.value.length);
+  if (actualRange) {
+    highlightMap.set(actualInfo.index, [actualRange]);
+  }
+
+  if (!highlightMap.size) {
+    return rawDetails;
+  }
+
+  return rawDetails.map((line, idx) => {
+    const highlights = highlightMap.get(idx);
+    if (!highlights) {
+      return line;
+    }
+    return { label: line, highlights };
+  });
+}
+
+type DetailValueLine = {
+  index: number;
+  value: string;
+  range: [number, number];
+};
+
+const expectedPatterns = [
+  /\bexpected output\b/i,
+  /\bexpected\b/i,
+  /\bcorrect output\b/i
+];
+const actualPatterns = [
+  /\bactual output\b/i,
+  /\bactual\b/i,
+  /\byour output\b/i,
+  /\bstudent output\b/i,
+  /\bgot\b/i,
+  /\breceived\b/i
+];
+
+function findValueLine(lines: string[], patterns: RegExp[]): DetailValueLine | undefined {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = findFirstMatch(line, patterns);
+    if (!match || typeof match.index !== 'number') {
+      continue;
+    }
+    const keywordIndex = match.index + match[0].length;
+    const valueInfo = extractValueSegment(line, keywordIndex);
+    if (!valueInfo) {
+      continue;
+    }
+    return { index: i, ...valueInfo };
+  }
+
+  return undefined;
+}
+
+function extractValueSegment(line: string, searchStart: number): { value: string; range: [number, number] } | undefined {
+  const separatorIndex = findSeparatorIndex(line, searchStart);
+  const afterSeparatorIndex = separatorIndex ?? searchStart;
+  const remainder = line.slice(afterSeparatorIndex);
+  const leadingWhitespace = remainder.match(/^\s*/) ?? [''];
+  const startOffset = leadingWhitespace[0].length;
+  const trimmed = remainder.slice(startOffset).trimEnd();
+
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const start = afterSeparatorIndex + startOffset;
+  const end = start + trimmed.length;
+  return { value: trimmed, range: [start, end] };
+}
+
+function findSeparatorIndex(line: string, from: number): number | undefined {
+  const colon = line.indexOf(':', from);
+  const equals = line.indexOf('=', from);
+  const candidates = [colon, equals].filter(idx => idx >= 0);
+  if (!candidates.length) {
+    return undefined;
+  }
+  return Math.min(...candidates) + 1;
+}
+
+function diffValueSegments(expected: string, actual: string) {
+  if (expected === actual) {
+    return undefined;
+  }
+
+  let start = 0;
+  const maxStart = Math.min(expected.length, actual.length);
+  while (start < maxStart && expected[start] === actual[start]) {
+    start++;
+  }
+
+  let endExpected = expected.length;
+  let endActual = actual.length;
+
+  while (endExpected > start && endActual > start && expected[endExpected - 1] === actual[endActual - 1]) {
+    endExpected--;
+    endActual--;
+  }
+
+  return {
+    expected: [start, endExpected] as [number, number],
+    actual: [start, endActual] as [number, number]
+  };
+}
+
+function translateRange(baseRange: [number, number], diffRange: [number, number], valueLength: number): [number, number] | undefined {
+  if (diffRange[0] === diffRange[1]) {
+    if (valueLength === 0) {
+      return undefined;
+    }
+    return [baseRange[0], baseRange[1]];
+  }
+  return [baseRange[0] + diffRange[0], baseRange[0] + diffRange[1]];
+}
+
+function findFirstMatch(text: string, patterns: RegExp[]): RegExpExecArray | undefined {
+  for (const pattern of patterns) {
+    pattern.lastIndex = 0;
+    const match = pattern.exec(text);
+    if (match) {
+      return match;
+    }
+  }
+  return undefined;
 }
