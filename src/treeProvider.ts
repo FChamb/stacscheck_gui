@@ -1,7 +1,13 @@
-// Tree view of test items
+// treeProvider.ts
+// Tree view with suite explorer + suite metadata.
+//
+// UX improvements:
+// - No double checkmark: selection is shown via icon + "Selected" description (not via "✓" text).
+// - Suite metadata shown in description (inputs/outs/scripts).
+// - Uniform icons + small theme color cues.
 
 import * as vscode from 'vscode';
-import { TestResult } from './types';
+import { TestResult, TestCaseResult } from './types';
 
 export class StacscheckTreeItem extends vscode.TreeItem {
   constructor(
@@ -12,6 +18,7 @@ export class StacscheckTreeItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
 
+    // Pass/fail icon decoration for test rows
     const textLabel = typeof label === 'string' ? label : label.label;
     if (textLabel.includes(': pass')) {
       this.iconPath = new vscode.ThemeIcon('pass-filled', new vscode.ThemeColor('testing.iconPassed'));
@@ -21,140 +28,305 @@ export class StacscheckTreeItem extends vscode.TreeItem {
   }
 }
 
+export type SuiteInfo = {
+  absPath: string;
+  label: string; // usually relative path from root
+  inputCount: number; // number of *.in files in this suite folder
+  outputCount: number; // number of *.out files in this suite folder
+  hasProgRun: boolean;
+  hasBuildAll: boolean;
+  testShCount: number; // number of test-*.sh scripts
+};
+
 export class StacscheckTreeProvider implements vscode.TreeDataProvider<StacscheckTreeItem> {
-  private _onDidChangeTreeData = new vscode.EventEmitter<StacscheckTreeItem | undefined | null | void>();
+  private readonly _onDidChangeTreeData = new vscode.EventEmitter<StacscheckTreeItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  private selectedDirectory: string | undefined;
+  private selectedRootDir: string | undefined;
+  private suites: SuiteInfo[] = [];
+  private selectedSuiteDir: string | undefined;
+
   private testResults: TestResult[] = [];
 
-  refresh(): void { this._onDidChangeTreeData.fire(); }
-  setTestResults(results: TestResult[]) { this.testResults = results; this.refresh(); }
-  setSelectedDirectory(path: string) { this.selectedDirectory = path; this.refresh(); }
-  getSelectedDirectory(): string | undefined { return this.selectedDirectory; }
+  refresh(): void {
+    this._onDidChangeTreeData.fire();
+  }
 
-  getTreeItem(e: StacscheckTreeItem): StacscheckTreeItem { return e; }
+  setTestResults(results: TestResult[]): void {
+    this.testResults = results;
+    this.refresh();
+  }
+
+  setSelectedRootDirectory(dirPath: string): void {
+    this.selectedRootDir = dirPath;
+    this.refresh();
+  }
+
+  getSelectedRootDirectory(): string | undefined {
+    return this.selectedRootDir;
+  }
+
+  setSuites(suites: SuiteInfo[]): void {
+    this.suites = suites;
+
+    const stillValid = this.selectedSuiteDir && suites.some(s => s.absPath === this.selectedSuiteDir);
+    if (!stillValid) this.selectedSuiteDir = undefined;
+
+    this.refresh();
+  }
+
+  getSuites(): SuiteInfo[] {
+    return this.suites;
+  }
+
+  setSelectedSuiteDirectory(dirPath: string | undefined): void {
+    this.selectedSuiteDir = dirPath;
+    this.refresh();
+  }
+
+  getSelectedSuiteDirectory(): string | undefined {
+    return this.selectedSuiteDir;
+  }
+
+  getTargetTestDirectory(): string | undefined {
+    return this.selectedSuiteDir ?? this.selectedRootDir;
+  }
+
+  getTreeItem(e: StacscheckTreeItem): StacscheckTreeItem {
+    return e;
+  }
 
   getChildren(element?: StacscheckTreeItem): Thenable<StacscheckTreeItem[]> {
-    // If a test node is expanded, show its raw detail lines as leaf items
+    // Expanded test node -> show details lines
     if (element?.details) {
       const detailEntries = element.details ?? [];
-      return Promise.resolve(
-        detailEntries.map(d => new StacscheckTreeItem(d, vscode.TreeItemCollapsibleState.None))
-      );
+      return Promise.resolve(detailEntries.map(d => new StacscheckTreeItem(d, vscode.TreeItemCollapsibleState.None)));
     }
 
-    const items: StacscheckTreeItem[] = [];
+    // Suites node children
+    if (element && element.contextValue === 'suiteRoot') {
+      const suiteItems = this.suites.map(suite => {
+        const isSelected = this.selectedSuiteDir === suite.absPath;
 
-    // Button: pick test directory
-    let selectDirLabel = 'Select Test Directory';
-    const selectDirBtn = new StacscheckTreeItem(
-      selectDirLabel,
-      vscode.TreeItemCollapsibleState.None,
-      { command: 'stacscheck-gui.selectDirectory', title: 'Select Directory', arguments: [] }
-    );
-    selectDirBtn.iconPath = new vscode.ThemeIcon('folder-opened');
-    items.push(selectDirBtn);
+        const item = new StacscheckTreeItem(
+          suite.label,
+          vscode.TreeItemCollapsibleState.None,
+          { command: 'stacscheck-gui.setSuite', title: 'Set Suite', arguments: [suite.absPath] }
+        );
 
-    if (this.selectedDirectory) {
-      // Show selected path in description instead
-      const selectDirItem = items[0];
-      selectDirItem.description = vscode.workspace.asRelativePath(this.selectedDirectory);
-
-      // Run tests
-      const runBtn = new StacscheckTreeItem(
-        'Run Tests',
-        vscode.TreeItemCollapsibleState.None,
-        { command: 'stacscheck-gui.runTests', title: 'Run Tests', arguments: [] }
-      );
-      runBtn.iconPath = new vscode.ThemeIcon('play');
-      items.push(runBtn);
-
-      // Results with summary + each test
-      let passCount = 0;
-      let totalTests = 0;
-      
-      this.testResults.forEach((t, i) => {
-        if (t.type === 'summary') {
-          items.push(new StacscheckTreeItem(t.details[0], vscode.TreeItemCollapsibleState.None));
+        // Clean selection indicator: icon + description (no extra "✓" in label)
+        if (isSelected) {
+          item.iconPath = new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
+          item.description = 'Selected';
         } else {
-          totalTests++;
-          if (t.result === 'pass') {
-            passCount++;
-          }
-          items.push(new StacscheckTreeItem(
-            `Test ${i + 1}: ${t.type} - ${t.name} : ${t.result}`,
-            vscode.TreeItemCollapsibleState.Collapsed,
-            undefined,
-            formatTestDetails(t)
-          ));
+          item.iconPath = new vscode.ThemeIcon('file-directory');
+          item.description = formatSuiteMetaShort(suite);
         }
+
+        item.tooltip = formatSuiteTooltip(suite);
+        item.contextValue = 'suiteItem';
+        return item;
       });
 
-      // Add progress bar after summary
-      if (totalTests > 0) {
-        const progressPercentage = (passCount / totalTests) * 100;
-        const barLength = 20;
-        const filledLength = Math.round((passCount / totalTests) * barLength);
-        const progressBar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
-        const progressLabel = `${progressBar} ${progressPercentage.toFixed(0)}%`;
-        
-        const progressItem = new StacscheckTreeItem(progressLabel, vscode.TreeItemCollapsibleState.None);
-        items.push(progressItem);
+      if (!suiteItems.length) {
+        const help = new StacscheckTreeItem(
+          'No suites detected (pick a folder containing .in/.out or test scripts)',
+          vscode.TreeItemCollapsibleState.None
+        );
+        help.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('problemsWarningIcon.foreground'));
+        return Promise.resolve([help]);
       }
 
-      const addTestItem = new StacscheckTreeItem(
-        'Add Custom Test',
-        vscode.TreeItemCollapsibleState.None,
-        { command: 'stacscheck-gui.addTest', title: 'Add Custom Test', arguments: [] }
-      );
-      addTestItem.iconPath = new vscode.ThemeIcon('diff-added');
-      items.push(addTestItem);
+      return Promise.resolve(suiteItems);
     }
+
+    // Root level tree
+    const items: StacscheckTreeItem[] = [];
+
+    items.push(this.makeSelectDirectoryButton());
+
+    if (!this.selectedRootDir) {
+      // helpful empty state
+      const hint = new StacscheckTreeItem('Select a test folder to begin', vscode.TreeItemCollapsibleState.None);
+      hint.iconPath = new vscode.ThemeIcon('info');
+      items.push(hint);
+      return Promise.resolve(items);
+    }
+
+    // Suites group
+    const suitesNode = new StacscheckTreeItem('Suites', vscode.TreeItemCollapsibleState.Collapsed);
+    suitesNode.iconPath = new vscode.ThemeIcon('folder-library');
+    suitesNode.contextValue = 'suiteRoot';
+
+    const hasSuites = this.suites.length > 0;
+    suitesNode.description = hasSuites
+      ? `${this.suites.length} found`
+      : 'None found';
+    suitesNode.tooltip = this.selectedRootDir;
+
+    items.push(suitesNode);
+
+    // Readiness gate:
+    // - If suites exist, require selecting one (prevents running in the wrong folder).
+    // - If no suites exist, allow root fallback.
+    const ready = this.getTargetTestDirectory() && (!hasSuites || !!this.selectedSuiteDir);
+
+    if (!ready) {
+      const msg = hasSuites
+        ? 'Pick a suite in “Suites” to run tests / add tests'
+        : 'No suites detected; you can still try running tests using the selected folder';
+      const info = new StacscheckTreeItem(msg, vscode.TreeItemCollapsibleState.None);
+      info.iconPath = new vscode.ThemeIcon('info');
+      items.push(info);
+      return Promise.resolve(items);
+    }
+
+    // Show which suite is active (small “context” line)
+    const activeDir = this.getTargetTestDirectory()!;
+    const activeLine = new StacscheckTreeItem('Active suite', vscode.TreeItemCollapsibleState.None);
+    activeLine.iconPath = new vscode.ThemeIcon('target', new vscode.ThemeColor('charts.blue'));
+    activeLine.description = vscode.workspace.asRelativePath(activeDir);
+    activeLine.tooltip = activeDir;
+    items.push(activeLine);
+
+    items.push(this.makeRunTestsButton());
+    items.push(...this.makeResultsItems());
+    items.push(this.makeAddCustomTestButton());
 
     return Promise.resolve(items);
   }
+
+  private makeSelectDirectoryButton(): StacscheckTreeItem {
+    const item = new StacscheckTreeItem(
+      'Select Test Directory',
+      vscode.TreeItemCollapsibleState.None,
+      { command: 'stacscheck-gui.selectDirectory', title: 'Select Directory', arguments: [] }
+    );
+    item.iconPath = new vscode.ThemeIcon('folder-opened');
+    if (this.selectedRootDir) {
+      item.description = vscode.workspace.asRelativePath(this.selectedRootDir);
+      item.tooltip = this.selectedRootDir;
+    }
+    return item;
+  }
+
+  private makeRunTestsButton(): StacscheckTreeItem {
+    const item = new StacscheckTreeItem(
+      'Run Tests',
+      vscode.TreeItemCollapsibleState.None,
+      { command: 'stacscheck-gui.runTests', title: 'Run Tests', arguments: [] }
+    );
+    item.iconPath = new vscode.ThemeIcon('play', new vscode.ThemeColor('charts.green'));
+    return item;
+  }
+
+  private makeAddCustomTestButton(): StacscheckTreeItem {
+    const item = new StacscheckTreeItem(
+      'Add Custom Test',
+      vscode.TreeItemCollapsibleState.None,
+      { command: 'stacscheck-gui.addTest', title: 'Add Custom Test', arguments: [] }
+    );
+    item.iconPath = new vscode.ThemeIcon('diff-added');
+    return item;
+  }
+
+  private makeResultsItems(): StacscheckTreeItem[] {
+    const items: StacscheckTreeItem[] = [];
+
+    let passCount = 0;
+    let totalTests = 0;
+    let displayIndex = 1;
+
+    for (const t of this.testResults) {
+      if (t.kind === 'summary') {
+        const line = t.details[0] ?? 'Summary';
+        const summaryItem = new StacscheckTreeItem(line, vscode.TreeItemCollapsibleState.None);
+        summaryItem.iconPath = new vscode.ThemeIcon('graph');
+        items.push(summaryItem);
+        continue;
+      }
+
+      totalTests++;
+      if (t.outcome === 'pass') passCount++;
+
+      items.push(
+        new StacscheckTreeItem(
+          `Test ${displayIndex++}: ${t.type} - ${t.name} : ${t.outcome}`,
+          vscode.TreeItemCollapsibleState.Collapsed,
+          undefined,
+          formatTestDetails(t)
+        )
+      );
+    }
+
+    if (totalTests > 0) {
+      const progressPercentage = (passCount / totalTests) * 100;
+      const barLength = 20;
+      const filledLength = Math.round((passCount / totalTests) * barLength);
+      const progressBar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
+      const barItem = new StacscheckTreeItem(`${progressBar} ${progressPercentage.toFixed(0)}%`, vscode.TreeItemCollapsibleState.None);
+      barItem.iconPath = new vscode.ThemeIcon('dashboard');
+      items.push(barItem);
+    }
+
+    return items;
+  }
 }
 
-function formatTestDetails(test: TestResult): (string | vscode.TreeItemLabel)[] {
+function formatSuiteMetaShort(s: SuiteInfo): string {
+  const parts: string[] = [];
+  parts.push(`${s.inputCount} in`);
+  if (s.outputCount > 0) parts.push(`${s.outputCount} out`);
+
+  const scriptBits: string[] = [];
+  if (s.hasProgRun) scriptBits.push('prog-run.sh');
+  if (s.hasBuildAll) scriptBits.push('build-all.sh');
+  if (s.testShCount > 0) scriptBits.push(`test-*.sh×${s.testShCount}`);
+
+  if (scriptBits.length) parts.push(scriptBits.join(', '));
+  return parts.join(' • ');
+}
+
+function formatSuiteTooltip(s: SuiteInfo): string {
+  const lines: string[] = [];
+  lines.push(s.absPath);
+  lines.push('');
+  lines.push(`Inputs (*.in): ${s.inputCount}`);
+  lines.push(`Outputs (*.out): ${s.outputCount}`);
+  lines.push(`prog-run.sh: ${s.hasProgRun ? 'yes' : 'no'}`);
+  lines.push(`build-all.sh: ${s.hasBuildAll ? 'yes' : 'no'}`);
+  lines.push(`test-*.sh scripts: ${s.testShCount}`);
+  return lines.join('\n');
+}
+
+/**
+ * Best-effort formatting/highlighting for failing tests (unchanged from your earlier version)
+ */
+function formatTestDetails(test: TestCaseResult): (string | vscode.TreeItemLabel)[] {
   const rawDetails = test.details ?? [];
-  if (!rawDetails.length || test.result !== 'fail') {
-    return rawDetails;
-  }
+  if (!rawDetails.length || test.outcome !== 'fail') return rawDetails;
 
   const expectedInfo = findValueLine(rawDetails, expectedPatterns);
   const actualInfo = findValueLine(rawDetails, actualPatterns);
 
-  if (!expectedInfo || !actualInfo) {
-    return rawDetails;
-  }
+  if (!expectedInfo || !actualInfo) return rawDetails;
 
   const diff = diffValueSegments(expectedInfo.value, actualInfo.value);
-  if (!diff) {
-    return rawDetails;
-  }
+  if (!diff) return rawDetails;
 
   const highlightMap = new Map<number, [number, number][]>();
+
   const expectedRange = translateRange(expectedInfo.range, diff.expected, expectedInfo.value.length);
-  if (expectedRange) {
-    highlightMap.set(expectedInfo.index, [expectedRange]);
-  }
+  if (expectedRange) highlightMap.set(expectedInfo.index, [expectedRange]);
 
   const actualRange = translateRange(actualInfo.range, diff.actual, actualInfo.value.length);
-  if (actualRange) {
-    highlightMap.set(actualInfo.index, [actualRange]);
-  }
+  if (actualRange) highlightMap.set(actualInfo.index, [actualRange]);
 
-  if (!highlightMap.size) {
-    return rawDetails;
-  }
+  if (!highlightMap.size) return rawDetails;
 
   return rawDetails.map((line, idx) => {
     const highlights = highlightMap.get(idx);
-    if (!highlights) {
-      return line;
-    }
-    return { label: line, highlights };
+    return highlights ? { label: line, highlights } : line;
   });
 }
 
@@ -164,35 +336,21 @@ type DetailValueLine = {
   range: [number, number];
 };
 
-const expectedPatterns = [
-  /\bexpected output\b/i,
-  /\bexpected\b/i,
-  /\bcorrect output\b/i
-];
-const actualPatterns = [
-  /\bactual output\b/i,
-  /\bactual\b/i,
-  /\byour output\b/i,
-  /\bstudent output\b/i,
-  /\bgot\b/i,
-  /\breceived\b/i
-];
+const expectedPatterns = [/\bexpected output\b/i, /\bexpected\b/i, /\bcorrect output\b/i];
+const actualPatterns = [/\bactual output\b/i, /\bactual\b/i, /\byour output\b/i, /\bstudent output\b/i, /\bgot\b/i, /\breceived\b/i];
 
 function findValueLine(lines: string[], patterns: RegExp[]): DetailValueLine | undefined {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const match = findFirstMatch(line, patterns);
-    if (!match || typeof match.index !== 'number') {
-      continue;
-    }
+    if (!match || typeof match.index !== 'number') continue;
+
     const keywordIndex = match.index + match[0].length;
     const valueInfo = extractValueSegment(line, keywordIndex);
-    if (!valueInfo) {
-      continue;
-    }
+    if (!valueInfo) continue;
+
     return { index: i, ...valueInfo };
   }
-
   return undefined;
 }
 
@@ -200,13 +358,12 @@ function extractValueSegment(line: string, searchStart: number): { value: string
   const separatorIndex = findSeparatorIndex(line, searchStart);
   const afterSeparatorIndex = separatorIndex ?? searchStart;
   const remainder = line.slice(afterSeparatorIndex);
+
   const leadingWhitespace = remainder.match(/^\s*/) ?? [''];
   const startOffset = leadingWhitespace[0].length;
-  const trimmed = remainder.slice(startOffset).trimEnd();
 
-  if (!trimmed) {
-    return undefined;
-  }
+  const trimmed = remainder.slice(startOffset).trimEnd();
+  if (!trimmed) return undefined;
 
   const start = afterSeparatorIndex + startOffset;
   const end = start + trimmed.length;
@@ -217,26 +374,19 @@ function findSeparatorIndex(line: string, from: number): number | undefined {
   const colon = line.indexOf(':', from);
   const equals = line.indexOf('=', from);
   const candidates = [colon, equals].filter(idx => idx >= 0);
-  if (!candidates.length) {
-    return undefined;
-  }
+  if (!candidates.length) return undefined;
   return Math.min(...candidates) + 1;
 }
 
 function diffValueSegments(expected: string, actual: string) {
-  if (expected === actual) {
-    return undefined;
-  }
+  if (expected === actual) return undefined;
 
   let start = 0;
   const maxStart = Math.min(expected.length, actual.length);
-  while (start < maxStart && expected[start] === actual[start]) {
-    start++;
-  }
+  while (start < maxStart && expected[start] === actual[start]) start++;
 
   let endExpected = expected.length;
   let endActual = actual.length;
-
   while (endExpected > start && endActual > start && expected[endExpected - 1] === actual[endActual - 1]) {
     endExpected--;
     endActual--;
@@ -250,9 +400,7 @@ function diffValueSegments(expected: string, actual: string) {
 
 function translateRange(baseRange: [number, number], diffRange: [number, number], valueLength: number): [number, number] | undefined {
   if (diffRange[0] === diffRange[1]) {
-    if (valueLength === 0) {
-      return undefined;
-    }
+    if (valueLength === 0) return undefined;
     return [baseRange[0], baseRange[1]];
   }
   return [baseRange[0] + diffRange[0], baseRange[0] + diffRange[1]];
@@ -262,9 +410,7 @@ function findFirstMatch(text: string, patterns: RegExp[]): RegExpExecArray | und
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
     const match = pattern.exec(text);
-    if (match) {
-      return match;
-    }
+    if (match) return match;
   }
   return undefined;
 }
