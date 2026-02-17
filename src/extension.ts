@@ -1,29 +1,96 @@
 // extension.ts
-// Suite discovery now collects metadata (counts + scripts) and the tree displays it.
+// Webview Control Panel + TreeView (Suites & Results) + Teacher Mode Recorder terminal.
+//
+// Control panel (webview) drives actions (select dir, suite, run tests, add test, teacher mode, recording).
+// TreeView shows Suites & Results (data) and still supports clicking suite items to select.
+//
+// Teacher Mode Recorder captures stdin typed in the recorder terminal during the run.
+// When recording is ON: stdin typed/pasted becomes the .in, stdout becomes the .out.
 
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
+import { exec, spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
 import { parseStacscheckOutput } from './parser';
+import { ControlPanelViewProvider } from './controlPanelView';
 
 export function activate(context: vscode.ExtensionContext) {
   const provider = new StacscheckTreeProvider();
+
+  // TreeView: suites + results (data)
   const treeView = vscode.window.createTreeView('stacscheckView', { treeDataProvider: provider });
   context.subscriptions.push(treeView);
 
+  // Webview: control panel (layout + spaced controls)
+  const controlPanel = new ControlPanelViewProvider(context, provider);
   context.subscriptions.push(
-    vscode.commands.registerCommand('stacscheck-gui.selectDirectory', () => selectTestDirectory(provider)),
-    vscode.commands.registerCommand('stacscheck-gui.setSuite', (suitePath: string) => setSuite(provider, suitePath)),
-    vscode.commands.registerCommand('stacscheck-gui.runTests', () => runStacscheck(provider)),
-    vscode.commands.registerCommand('stacscheck-gui.addTest', () => addCustomTest(provider))
+    vscode.window.registerWebviewViewProvider(ControlPanelViewProvider.viewType, controlPanel, {
+      webviewOptions: { retainContextWhenHidden: true }
+    })
+  );
+
+  // Push updates to the control panel whenever tree state changes
+  provider.onDidChangeTreeData(() => controlPanel.postState());
+
+  // Recorder terminal
+  const recorder = new RecorderTerminal(provider);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('stacscheck-gui.selectDirectory', async () => {
+      await selectTestDirectory(provider);
+      controlPanel.postState();
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.setSuite', async (suitePath: string) => {
+      await setSuite(provider, suitePath);
+      controlPanel.postState();
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.enterTeacherMode', async () => {
+      provider.setTeacherMode(true);
+      controlPanel.postState();
+      vscode.window.showInformationMessage('Teacher Mode enabled.');
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.exitTeacherMode', async () => {
+      provider.setTeacherMode(false);
+      recorder.setRecording(false);
+      controlPanel.postState();
+      vscode.window.showInformationMessage('Teacher Mode disabled.');
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.startRecording', async () => {
+      if (!ensureSuiteSelected(provider)) return;
+      provider.setRecording(true);
+      recorder.setRecording(true);
+      controlPanel.postState();
+      recorder.show();
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.stopRecording', async () => {
+      provider.setRecording(false);
+      recorder.setRecording(false);
+      controlPanel.postState();
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.runTests', async () => {
+      await runStacscheck(provider);
+      controlPanel.postState();
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.addTest', async () => {
+      await addCustomTest(provider);
+      controlPanel.postState();
+    })
   );
 }
 
 export function deactivate() {}
+
+// ----------------- Directory + suites -----------------
 
 async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<void> {
   const defaultUri = vscode.workspace.workspaceFolders?.[0]?.uri || vscode.Uri.file(os.homedir());
@@ -45,7 +112,6 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
   const suites = await findSuites(selected);
   provider.setSuites(suites);
 
-  // Auto-select: if the selected folder is itself a suite
   const exact = suites.find(s => s.absPath === selected);
   if (exact) {
     provider.setSelectedSuiteDirectory(selected);
@@ -53,7 +119,6 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
     return;
   }
 
-  // Auto-select if only one suite found
   if (suites.length === 1) {
     provider.setSelectedSuiteDirectory(suites[0].absPath);
     vscode.window.showInformationMessage(`Selected suite: ${suites[0].label}`);
@@ -61,21 +126,36 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
   }
 
   if (suites.length > 1) {
-    vscode.window.showInformationMessage('Suites detected. Expand “Suites” and click one to select it.');
+    vscode.window.showInformationMessage('Suites detected. Select one in the Suites list.');
   } else {
     vscode.window.showWarningMessage(
-      'No suites detected. You can still try running stacscheck from this folder, but it’s usually better to pick a folder containing .in/.out or test scripts.'
+      'No suites detected. You can still run stacscheck on this folder, but it’s usually better to pick a folder containing .in/.out or test scripts.'
     );
   }
 }
 
 async function setSuite(provider: StacscheckTreeProvider, suitePath: string): Promise<void> {
   provider.setSelectedSuiteDirectory(suitePath);
-  provider.setTestResults([]);
-
   const rel = vscode.workspace.asRelativePath(suitePath);
   vscode.window.showInformationMessage(`Selected suite: ${rel}`);
 }
+
+function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
+  const testDir = provider.getTargetTestDirectory();
+  if (!testDir) {
+    vscode.window.showErrorMessage('Select a test directory first.');
+    return false;
+  }
+
+  const suites = provider.getSuites();
+  if (suites.length > 0 && !provider.getSelectedSuiteDirectory()) {
+    vscode.window.showErrorMessage('Please select a suite folder (from the Suites list).');
+    return false;
+  }
+  return true;
+}
+
+// ----------------- Running stacscheck -----------------
 
 async function runStacscheck(provider: StacscheckTreeProvider): Promise<void> {
   const testDir = provider.getTargetTestDirectory();
@@ -86,7 +166,7 @@ async function runStacscheck(provider: StacscheckTreeProvider): Promise<void> {
 
   const suites = provider.getSuites();
   if (suites.length > 0 && !provider.getSelectedSuiteDirectory()) {
-    vscode.window.showErrorMessage('Please select a suite folder (expand “Suites” and click one).');
+    vscode.window.showErrorMessage('Please select a suite folder first.');
     return;
   }
 
@@ -169,6 +249,8 @@ function isDirectory(p: string): boolean {
   }
 }
 
+// ----------------- Add Custom Test -----------------
+
 async function addCustomTest(provider: StacscheckTreeProvider): Promise<void> {
   const targetDir = provider.getTargetTestDirectory();
   if (!targetDir) {
@@ -178,7 +260,7 @@ async function addCustomTest(provider: StacscheckTreeProvider): Promise<void> {
 
   const suites = provider.getSuites();
   if (suites.length > 0 && !provider.getSelectedSuiteDirectory()) {
-    vscode.window.showErrorMessage('Please select a suite folder first (expand “Suites” and click one).');
+    vscode.window.showErrorMessage('Please select a suite folder first.');
     return;
   }
 
@@ -255,11 +337,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 function slugify(value: string): string {
-  const base = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-_]+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  const base = value.trim().toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
   return base || 'stacscheck-test';
 }
 
@@ -268,19 +346,226 @@ function ensureTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`;
 }
 
-/**
- * Suite discovery WITH metadata.
- *
- * A suite folder is heuristically:
- *  - contains at least one *.in, OR
- *  - contains scripts commonly used by stacscheck suites:
- *      prog-run.sh, build-all.sh, test-*.sh
- *
- * Metadata is computed from the immediate folder contents (not recursive):
- *  - inputCount: number of *.in
- *  - outputCount: number of *.out
- *  - hasProgRun / hasBuildAll / testShCount
- */
+// ----------------- Recorder Pseudo Terminal -----------------
+
+class RecorderTerminal implements vscode.Pseudoterminal {
+  private writeEmitter = new vscode.EventEmitter<string>();
+  onDidWrite: vscode.Event<string> = this.writeEmitter.event;
+
+  private closeEmitter = new vscode.EventEmitter<void>();
+  onDidClose?: vscode.Event<void> = this.closeEmitter.event;
+
+  private terminal: vscode.Terminal | undefined;
+
+  private recording = false;
+
+  // When idle: user is typing a command line
+  private lineBuffer = '';
+
+  // When running: user input is forwarded to child stdin and recorded
+  private busy = false;
+  private child: ChildProcessWithoutNullStreams | undefined;
+  private recordedStdin = '';
+  private stdinClosed = false;
+
+  private recordCounter = 1;
+
+  constructor(private provider: StacscheckTreeProvider) {}
+
+  show(): void {
+    if (!this.terminal) {
+      this.terminal = vscode.window.createTerminal({ name: 'stacscheck Recorder', pty: this });
+    }
+    this.terminal.show(true);
+  }
+
+  setRecording(on: boolean): void {
+    this.recording = on;
+    this.provider.setRecording(on);
+  }
+
+  open(_initialDimensions: vscode.TerminalDimensions | undefined): void {
+    this.writeLine('stacscheck Recorder Terminal');
+    this.writeLine('Type a command and press Enter.');
+    this.writeLine('If Recording is ON: stdin you type/paste becomes the .in, stdout becomes the .out.');
+    this.writeLine('Tip: Press Ctrl+D to send EOF if your program reads until EOF.');
+    this.writeLine('');
+    this.prompt();
+  }
+
+  close(): void {
+    this.closeEmitter.fire();
+  }
+
+  handleInput(data: string): void {
+    // If a command is currently running, treat keystrokes as program stdin.
+    if (this.busy && this.child && !this.stdinClosed) {
+      for (const ch of data) {
+        // Ctrl+D => close stdin (EOF)
+        if (ch === '\u0004') {
+          this.stdinClosed = true;
+          try {
+            this.child.stdin.end();
+          } catch {}
+          this.writeLine('^D');
+          continue;
+        }
+
+        // Ctrl+C => forward interrupt to process
+        if (ch === '\u0003') {
+          this.writeLine('^C');
+          try {
+            this.child.kill('SIGINT');
+          } catch {}
+          continue;
+        }
+
+        // Record + echo + forward
+        this.recordedStdin += ch;
+        this.write(ch);
+
+        try {
+          this.child.stdin.write(ch);
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
+    // Otherwise, we’re editing a command line
+    for (const ch of data) {
+      if (ch === '\r') {
+        const cmd = this.lineBuffer.trim();
+        this.writeLine('');
+        this.lineBuffer = '';
+
+        if (!cmd) {
+          this.prompt();
+          continue;
+        }
+
+        this.runCommand(cmd).catch(err => {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.writeLine(`[error] ${msg}`);
+          this.prompt();
+        });
+
+        continue;
+      }
+
+      if (ch === '\u0003') {
+        this.writeLine('^C');
+        this.lineBuffer = '';
+        this.prompt();
+        continue;
+      }
+
+      if (ch === '\u007f') {
+        if (this.lineBuffer.length > 0) {
+          this.lineBuffer = this.lineBuffer.slice(0, -1);
+          this.write('\b \b');
+        }
+        continue;
+      }
+
+      this.lineBuffer += ch;
+      this.write(ch);
+    }
+  }
+
+  private write(text: string): void {
+    this.writeEmitter.fire(text);
+  }
+
+  private writeLine(text: string): void {
+    this.writeEmitter.fire(text + '\r\n');
+  }
+
+  private prompt(): void {
+    this.write('> ');
+  }
+
+  private async runCommand(cmd: string): Promise<void> {
+    if (!this.provider.isTeacherMode()) {
+      this.writeLine('[info] Enable Teacher Mode first.');
+      this.prompt();
+      return;
+    }
+
+    if (!ensureSuiteSelected(this.provider)) {
+      this.writeLine('[info] Select a suite folder first.');
+      this.prompt();
+      return;
+    }
+
+    const suiteDir = this.provider.getTargetTestDirectory()!;
+    const workingDir = await resolveWorkingDir(suiteDir, ['src', 'source']);
+    if (!workingDir) {
+      this.writeLine('[error] No src/ or source/ directory found for this project.');
+      this.prompt();
+      return;
+    }
+
+    // Reset per-run recording state
+    this.busy = true;
+    this.recordedStdin = '';
+    this.stdinClosed = false;
+
+    this.writeLine(`[cwd] ${workingDir}`);
+    this.writeLine(`[cmd] ${cmd}`);
+
+    const child = spawn(cmd, { cwd: workingDir, shell: true });
+    this.child = child;
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', d => {
+      const s = d.toString();
+      stdout += s;
+      this.write(s);
+    });
+
+    child.stderr.on('data', d => {
+      stderr += d.toString();
+    });
+
+    const exitCode: number | null = await new Promise(resolve => {
+      child.on('close', code => resolve(code));
+    });
+
+    if (stderr.trim()) {
+      this.writeLine('\r\n[stderr]');
+      this.writeLine(stderr.trimEnd());
+    }
+    if (exitCode !== 0) {
+      this.writeLine(`\r\n[exit] code ${exitCode}`);
+    }
+
+    if (this.recording) {
+      const base = `recorded-${String(this.recordCounter++).padStart(3, '0')}`;
+      const uniqueBase = await ensureUniqueBaseName(suiteDir, base);
+
+      const inPath = path.join(suiteDir, `${uniqueBase}.in`);
+      const outPath = path.join(suiteDir, `${uniqueBase}.out`);
+
+      await fs.promises.writeFile(inPath, ensureTrailingNewline(this.recordedStdin), 'utf8');
+      await fs.promises.writeFile(outPath, ensureTrailingNewline(stdout), 'utf8');
+
+      this.writeLine(`\r\n[saved] ${path.basename(inPath)} + ${path.basename(outPath)} (${vscode.workspace.asRelativePath(suiteDir)})`);
+      vscode.window.showInformationMessage(`Recorded test: ${path.basename(inPath)} / ${path.basename(outPath)}`);
+    }
+
+    // Cleanup
+    this.child = undefined;
+    this.busy = false;
+    this.prompt();
+  }
+}
+
+// ----------------- Suite discovery WITH metadata -----------------
+
 async function findSuites(rootDir: string): Promise<SuiteInfo[]> {
   const results: SuiteInfo[] = [];
   const seen = new Set<string>();
@@ -319,7 +604,6 @@ async function findSuites(rootDir: string): Promise<SuiteInfo[]> {
     if (suite && !seen.has(dir)) {
       seen.add(dir);
       results.push(suite);
-      // Keep walking to find nested suites
     }
 
     let entries: fs.Dirent[];
@@ -339,8 +623,7 @@ async function findSuites(rootDir: string): Promise<SuiteInfo[]> {
   await walk(rootDir, 6);
 
   results.sort(
-    (a, b) =>
-      a.label.split(path.sep).length - b.label.split(path.sep).length || a.label.localeCompare(b.label)
+    (a, b) => a.label.split(path.sep).length - b.label.split(path.sep).length || a.label.localeCompare(b.label)
   );
 
   return results;
