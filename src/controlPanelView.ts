@@ -1,12 +1,15 @@
 // controlPanelView.ts
-// Webview-based control panel for stacscheck GUI.
-// Provides a clean layout (sections + bottom pinned Teacher Mode toggle)
-// and sends messages to the extension to run commands.
-//
-// The TreeView remains focused on Suites + Results (hierarchy).
+// Full sidebar GUI (webview) for stacscheck:
+// - Setup (select tests folder)
+// - Suite selection (dropdown + metadata)
+// - Actions (Run, Add Test)
+// - Teacher tools (Record toggle) shown when Teacher Mode enabled
+// - Results list with expandable details + progress bar
+// - Bottom pinned Teacher Mode toggle
 
 import * as vscode from 'vscode';
 import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
+import { TestResult, TestCaseResult } from './types';
 
 type ControlState = {
   rootDir?: string;
@@ -15,6 +18,7 @@ type ControlState = {
   targetDir?: string;
   teacherMode: boolean;
   recording: boolean;
+  results: TestResult[];
 };
 
 export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
@@ -27,11 +31,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     private readonly provider: StacscheckTreeProvider
   ) {}
 
-  resolveWebviewView(
-    webviewView: vscode.WebviewView,
-    _context: vscode.WebviewViewResolveContext,
-    _token: vscode.CancellationToken
-  ): void {
+  resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
 
     webviewView.webview.options = {
@@ -41,7 +41,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtml(webviewView.webview);
 
-    // Receive events from the webview
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       try {
         switch (msg?.type) {
@@ -87,11 +86,9 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Push initial state
     this.postState();
   }
 
-  /** Call this whenever extension state changes */
   public postState(): void {
     if (!this.view) return;
     this.view.webview.postMessage({ type: 'state', state: this.getState() });
@@ -104,7 +101,8 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       selectedSuiteDir: this.provider.getSelectedSuiteDirectory(),
       targetDir: this.provider.getTargetTestDirectory(),
       teacherMode: this.provider.isTeacherMode(),
-      recording: this.provider.isRecording()
+      recording: this.provider.isRecording(),
+      results: this.provider.getTestResults()
     };
   }
 
@@ -121,7 +119,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
              style-src ${webview.cspSource} 'unsafe-inline';
              script-src 'nonce-${nonce}';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>stacscheck Control Panel</title>
+  <title>stacscheck GUI</title>
 
   <style>
     :root {
@@ -132,6 +130,8 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       --border: color-mix(in srgb, var(--vscode-panel-border) 70%, transparent);
       --bg: var(--vscode-sideBar-background);
       --card: color-mix(in srgb, var(--vscode-editorWidget-background) 75%, transparent);
+      --ok: var(--vscode-testing-iconPassed, #2ea043);
+      --bad: var(--vscode-testing-iconFailed, #f85149);
     }
 
     body {
@@ -208,14 +208,11 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     .divider {
       height: 1px;
       background: var(--border);
-      margin: 6px 0;
+      margin: 8px 0;
     }
 
-    .spacer {
-      flex: 1;
-    }
+    .spacer { flex: 1; }
 
-    /* Bottom pinned bar */
     .bottomBar {
       position: sticky;
       bottom: 0;
@@ -235,6 +232,55 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       border-radius: 999px;
       border: 1px solid var(--border);
       font-size: 0.85em;
+    }
+
+    .progress {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      background: transparent;
+    }
+    .progressFill {
+      height: 100%;
+      width: 0%;
+      background: var(--ok);
+    }
+
+    .test {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px;
+      background: color-mix(in srgb, var(--card) 55%, transparent);
+      margin-top: 8px;
+    }
+    .testHeader {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .badge {
+      font-size: 0.85em;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .badge.pass { color: var(--ok); }
+    .badge.fail { color: var(--bad); }
+    pre {
+      margin: 8px 0 0 0;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--vscode-textCodeBlock-background);
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
   </style>
 </head>
@@ -281,6 +327,18 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
 
+    <div class="card">
+      <div class="title">Results</div>
+      <div class="row" style="justify-content: space-between;">
+        <div class="muted" id="textSummary">No results yet.</div>
+        <span class="pill" id="pillPassFail">—</span>
+      </div>
+      <div class="progress" style="margin-top: 8px;">
+        <div class="progressFill" id="progressFill"></div>
+      </div>
+      <div id="resultsList"></div>
+    </div>
+
     <div class="spacer"></div>
 
     <div class="bottomBar">
@@ -288,7 +346,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         <div class="toggle">
           <div>
             <div class="title" style="margin: 0;">Teacher Mode</div>
-            <div class="muted">Shows recording tools and assumes current solution is correct.</div>
+            <div class="muted">Enables recording tools and assumes current solution is correct.</div>
           </div>
           <button id="btnTeacherMode" class="secondary">Enter</button>
         </div>
@@ -313,6 +371,11 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       btnRecord: document.getElementById('btnRecord'),
       textRecordHint: document.getElementById('textRecordHint'),
 
+      textSummary: document.getElementById('textSummary'),
+      pillPassFail: document.getElementById('pillPassFail'),
+      progressFill: document.getElementById('progressFill'),
+      resultsList: document.getElementById('resultsList'),
+
       btnTeacherMode: document.getElementById('btnTeacherMode'),
     };
 
@@ -322,7 +385,8 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       selectedSuiteDir: undefined,
       targetDir: undefined,
       teacherMode: false,
-      recording: false
+      recording: false,
+      results: []
     };
 
     function suiteMetaText(s) {
@@ -339,12 +403,64 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     function computeReady() {
       if (!state.rootDir) return false;
-      if (state.suites.length === 0) return true; // fallback to root
+      if (!state.suites || state.suites.length === 0) return true; // fallback to root
       return !!state.selectedSuiteDir;
     }
 
+    function computePassFail(results) {
+      const tests = (results || []).filter(r => r.kind === 'test');
+      const total = tests.length;
+      const pass = tests.filter(t => t.outcome === 'pass').length;
+      return { pass, total, pct: total ? Math.round((pass / total) * 100) : 0 };
+    }
+
+    function renderResults() {
+      const { pass, total, pct } = computePassFail(state.results);
+
+      if (!total) {
+        els.textSummary.textContent = 'No results yet.';
+        els.pillPassFail.textContent = '—';
+        els.progressFill.style.width = '0%';
+        els.resultsList.innerHTML = '';
+        return;
+      }
+
+      els.textSummary.textContent = \`\${pass} / \${total} tests passed\`;
+      els.pillPassFail.textContent = \`\${pct}%\`;
+      els.progressFill.style.width = \`\${pct}%\`;
+
+      // Render expandable tests + include summary lines
+      const items = [];
+      for (const r of state.results) {
+        if (r.kind === 'summary') {
+          items.push(\`<div class="muted" style="margin-top:8px;">\${escapeHtml((r.details && r.details[0]) || '')}</div>\`);
+          continue;
+        }
+
+        // test
+        const label = \`\${r.type} — \${r.name}\`;
+        const badgeClass = r.outcome === 'pass' ? 'pass' : 'fail';
+        const badgeText = r.outcome.toUpperCase();
+
+        const detailsText = (r.details || []).join('\\n').trim();
+        items.push(\`
+          <div class="test">
+            <details>
+              <summary class="testHeader">
+                <span>\${escapeHtml(label)}</span>
+                <span class="badge \${badgeClass}">\${badgeText}</span>
+              </summary>
+              <pre>\${escapeHtml(detailsText)}</pre>
+            </details>
+          </div>
+        \`);
+      }
+
+      els.resultsList.innerHTML = items.join('');
+    }
+
     function render() {
-      // Setup block
+      // Setup
       if (state.rootDir) {
         els.textRootDir.textContent = state.rootDir;
         els.pillReady.textContent = computeReady() ? 'Ready' : 'Pick suite';
@@ -357,6 +473,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       els.suiteSelect.innerHTML = '';
       if (state.suites && state.suites.length > 0) {
         els.suiteSelect.disabled = false;
+
         const placeholder = document.createElement('option');
         placeholder.value = '';
         placeholder.textContent = 'Select a suite…';
@@ -381,12 +498,12 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         els.textSuiteMeta.textContent = '';
       }
 
-      // Actions enabled/disabled
+      // Actions
       const ready = computeReady();
       els.btnRun.disabled = !ready;
       els.btnAdd.disabled = !ready;
 
-      // Teacher UI
+      // Teacher
       els.btnTeacherMode.textContent = state.teacherMode ? 'Exit' : 'Enter';
       els.btnRecord.disabled = !ready || !state.teacherMode;
       els.btnRecord.textContent = state.recording ? 'Stop Recording' : 'Record Tests';
@@ -394,12 +511,10 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         ? (state.recording ? 'Recorder terminal is active.' : 'Opens recorder terminal.')
         : 'Enable Teacher Mode to record.';
 
-      // Style nuance
-      els.btnTeacherMode.classList.toggle('secondary', true);
-      els.btnRecord.classList.toggle('secondary', !state.recording);
+      renderResults();
     }
 
-    // UI events
+    // Events
     els.btnSelectDir.addEventListener('click', () => vscode.postMessage({ type: 'selectDirectory' }));
     els.btnRun.addEventListener('click', () => vscode.postMessage({ type: 'runTests' }));
     els.btnAdd.addEventListener('click', () => vscode.postMessage({ type: 'addTest' }));
@@ -417,7 +532,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       if (suitePath) vscode.postMessage({ type: 'setSuite', suitePath });
     });
 
-    // Receive state updates
     window.addEventListener('message', (event) => {
       const msg = event.data;
       if (msg?.type === 'state') {
@@ -426,8 +540,16 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       }
     });
 
-    // Ask for initial state (in case extension posts before listener attaches)
     vscode.postMessage({ type: 'requestState' });
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
   </script>
 </body>
 </html>`;

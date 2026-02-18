@@ -52,8 +52,7 @@
     },
     "views": {
       "stacscheck-explorer": [
-        { "id": "stacscheckControl", "name": "Control Panel", "type": "webview" },
-        { "id": "stacscheckView", "name": "Suites & Results" }
+        { "id": "stacscheckControl", "name": "Control Panel", "type": "webview" }
       ]
     }
   },

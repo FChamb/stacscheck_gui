@@ -1,11 +1,4 @@
 // extension.ts
-// Webview Control Panel + TreeView (Suites & Results) + Teacher Mode Recorder terminal.
-//
-// Control panel (webview) drives actions (select dir, suite, run tests, add test, teacher mode, recording).
-// TreeView shows Suites & Results (data) and still supports clicking suite items to select.
-//
-// Teacher Mode Recorder captures stdin typed in the recorder terminal during the run.
-// When recording is ON: stdin typed/pasted becomes the .in, stdout becomes the .out.
 
 import * as vscode from 'vscode';
 import { exec, spawn, ChildProcessWithoutNullStreams } from 'child_process';
@@ -20,11 +13,7 @@ import { ControlPanelViewProvider } from './controlPanelView';
 export function activate(context: vscode.ExtensionContext) {
   const provider = new StacscheckTreeProvider();
 
-  // TreeView: suites + results (data)
-  const treeView = vscode.window.createTreeView('stacscheckView', { treeDataProvider: provider });
-  context.subscriptions.push(treeView);
-
-  // Webview: control panel (layout + spaced controls)
+  // Webview: single pane GUI
   const controlPanel = new ControlPanelViewProvider(context, provider);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ControlPanelViewProvider.viewType, controlPanel, {
@@ -32,7 +21,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Push updates to the control panel whenever tree state changes
+  // Push updates to the control panel whenever state changes
   provider.onDidChangeTreeData(() => controlPanel.postState());
 
   // Recorder terminal
@@ -126,7 +115,7 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
   }
 
   if (suites.length > 1) {
-    vscode.window.showInformationMessage('Suites detected. Select one in the Suites list.');
+    vscode.window.showInformationMessage('Suites detected. Select one in the Suite dropdown.');
   } else {
     vscode.window.showWarningMessage(
       'No suites detected. You can still run stacscheck on this folder, but it’s usually better to pick a folder containing .in/.out or test scripts.'
@@ -136,8 +125,6 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
 
 async function setSuite(provider: StacscheckTreeProvider, suitePath: string): Promise<void> {
   provider.setSelectedSuiteDirectory(suitePath);
-  const rel = vscode.workspace.asRelativePath(suitePath);
-  vscode.window.showInformationMessage(`Selected suite: ${rel}`);
 }
 
 function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
@@ -149,7 +136,7 @@ function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
 
   const suites = provider.getSuites();
   if (suites.length > 0 && !provider.getSelectedSuiteDirectory()) {
-    vscode.window.showErrorMessage('Please select a suite folder (from the Suites list).');
+    vscode.window.showErrorMessage('Please select a suite folder.');
     return false;
   }
   return true;
@@ -358,11 +345,8 @@ class RecorderTerminal implements vscode.Pseudoterminal {
   private terminal: vscode.Terminal | undefined;
 
   private recording = false;
-
-  // When idle: user is typing a command line
   private lineBuffer = '';
 
-  // When running: user input is forwarded to child stdin and recorded
   private busy = false;
   private child: ChildProcessWithoutNullStreams | undefined;
   private recordedStdin = '';
@@ -398,59 +382,39 @@ class RecorderTerminal implements vscode.Pseudoterminal {
   }
 
   handleInput(data: string): void {
-    // If a command is currently running, treat keystrokes as program stdin.
     if (this.busy && this.child && !this.stdinClosed) {
       for (const ch of data) {
-        // Ctrl+D => close stdin (EOF)
         if (ch === '\u0004') {
           this.stdinClosed = true;
-          try {
-            this.child.stdin.end();
-          } catch {}
+          try { this.child.stdin.end(); } catch {}
           this.writeLine('^D');
           continue;
         }
-
-        // Ctrl+C => forward interrupt to process
         if (ch === '\u0003') {
           this.writeLine('^C');
-          try {
-            this.child.kill('SIGINT');
-          } catch {}
+          try { this.child.kill('SIGINT'); } catch {}
           continue;
         }
-
-        // Record + echo + forward
         this.recordedStdin += ch;
         this.write(ch);
-
-        try {
-          this.child.stdin.write(ch);
-        } catch {
-          // ignore
-        }
+        try { this.child.stdin.write(ch); } catch {}
       }
       return;
     }
 
-    // Otherwise, we’re editing a command line
     for (const ch of data) {
       if (ch === '\r') {
         const cmd = this.lineBuffer.trim();
         this.writeLine('');
         this.lineBuffer = '';
 
-        if (!cmd) {
-          this.prompt();
-          continue;
-        }
+        if (!cmd) { this.prompt(); continue; }
 
         this.runCommand(cmd).catch(err => {
           const msg = err instanceof Error ? err.message : String(err);
           this.writeLine(`[error] ${msg}`);
           this.prompt();
         });
-
         continue;
       }
 
@@ -477,11 +441,9 @@ class RecorderTerminal implements vscode.Pseudoterminal {
   private write(text: string): void {
     this.writeEmitter.fire(text);
   }
-
   private writeLine(text: string): void {
     this.writeEmitter.fire(text + '\r\n');
   }
-
   private prompt(): void {
     this.write('> ');
   }
@@ -492,7 +454,6 @@ class RecorderTerminal implements vscode.Pseudoterminal {
       this.prompt();
       return;
     }
-
     if (!ensureSuiteSelected(this.provider)) {
       this.writeLine('[info] Select a suite folder first.');
       this.prompt();
@@ -507,7 +468,6 @@ class RecorderTerminal implements vscode.Pseudoterminal {
       return;
     }
 
-    // Reset per-run recording state
     this.busy = true;
     this.recordedStdin = '';
     this.stdinClosed = false;
@@ -531,9 +491,7 @@ class RecorderTerminal implements vscode.Pseudoterminal {
       stderr += d.toString();
     });
 
-    const exitCode: number | null = await new Promise(resolve => {
-      child.on('close', code => resolve(code));
-    });
+    const exitCode: number | null = await new Promise(resolve => child.on('close', code => resolve(code)));
 
     if (stderr.trim()) {
       this.writeLine('\r\n[stderr]');
@@ -553,11 +511,10 @@ class RecorderTerminal implements vscode.Pseudoterminal {
       await fs.promises.writeFile(inPath, ensureTrailingNewline(this.recordedStdin), 'utf8');
       await fs.promises.writeFile(outPath, ensureTrailingNewline(stdout), 'utf8');
 
-      this.writeLine(`\r\n[saved] ${path.basename(inPath)} + ${path.basename(outPath)} (${vscode.workspace.asRelativePath(suiteDir)})`);
+      this.writeLine(`\r\n[saved] ${path.basename(inPath)} + ${path.basename(outPath)}`);
       vscode.window.showInformationMessage(`Recorded test: ${path.basename(inPath)} / ${path.basename(outPath)}`);
     }
 
-    // Cleanup
     this.child = undefined;
     this.busy = false;
     this.prompt();
