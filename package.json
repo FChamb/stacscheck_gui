@@ -52,7 +52,12 @@
     },
     "views": {
       "stacscheck-explorer": [
-        { "id": "stacscheckControl", "name": "Control Panel", "type": "webview", "icon": "$(pass)" }
+        {
+          "id": "stacscheckControl",
+          "name": "Control Panel",
+          "type": "webview",
+          "icon": "$(pass)"
+        }
       ]
     }
   },
@@ -66,7 +71,7 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
+    "@types/node": "^22.19.15",
     "@types/vscode": "^1.104.0",
     "@typescript-eslint/eslint-plugin": "^8.42.0",
     "@typescript-eslint/parser": "^8.42.0",
