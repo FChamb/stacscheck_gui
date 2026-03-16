@@ -1,15 +1,16 @@
 // controlPanelView.ts
-// Full sidebar GUI (webview) for stacscheck:
-// - Setup (select tests folder)
-// - Suite selection (dropdown + metadata)
-// - Actions (Run, Add Test)
-// - Teacher tools (Record toggle) shown when Teacher Mode enabled
-// - Results list with expandable details + progress bar
-// - Bottom pinned Teacher Mode toggle
+// Full sidebar GUI (webview) for stacscheck.
+// Includes:
+// - Setup
+// - Suite selection
+// - Actions
+// - Teacher tools
+// - Results
+// - In-panel multi-step startup wizard with presets + live preview
 
 import * as vscode from 'vscode';
 import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
-import { TestResult, TestCaseResult } from './types';
+import { TestResult } from './types';
 
 type ControlState = {
   rootDir?: string;
@@ -76,6 +77,10 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
             break;
           }
 
+          case 'submitWizard':
+            await vscode.commands.executeCommand('stacscheck-gui.createSuiteFromWizard', msg.payload);
+            break;
+
           case 'requestState':
             this.postState();
             break;
@@ -109,7 +114,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
   private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
 
-    return /* html */ `<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -132,6 +137,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       --card: color-mix(in srgb, var(--vscode-editorWidget-background) 75%, transparent);
       --ok: var(--vscode-testing-iconPassed, #2ea043);
       --bad: var(--vscode-testing-iconFailed, #f85149);
+      --warn: var(--vscode-testing-iconQueued, #d29922);
     }
 
     body {
@@ -163,6 +169,11 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       margin-bottom: 6px;
     }
 
+    .subtitle {
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
     .row {
       display: flex;
       gap: 8px;
@@ -170,13 +181,40 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       flex-wrap: wrap;
     }
 
+    .col {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
     .muted {
       color: var(--muted);
       font-size: 0.9em;
     }
 
-    button, select {
+    label {
+      font-size: 0.92em;
+      margin-bottom: 4px;
+      display: block;
+    }
+
+    input, textarea, button, select {
       font: inherit;
+    }
+
+    input, textarea, select {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      box-sizing: border-box;
+    }
+
+    textarea {
+      min-height: 72px;
+      resize: vertical;
     }
 
     button {
@@ -187,22 +225,20 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-button-foreground);
       cursor: pointer;
     }
+
     button.secondary {
       background: transparent;
       color: var(--vscode-foreground);
     }
+
+    button.warning {
+      background: transparent;
+      color: var(--warn);
+    }
+
     button:disabled {
       opacity: 0.55;
       cursor: not-allowed;
-    }
-
-    select {
-      width: 100%;
-      padding: 8px 10px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: var(--vscode-input-background);
-      color: var(--vscode-input-foreground);
     }
 
     .divider {
@@ -242,6 +278,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       background: transparent;
     }
+
     .progressFill {
       height: 100%;
       width: 0%;
@@ -255,6 +292,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       background: color-mix(in srgb, var(--card) 55%, transparent);
       margin-top: 8px;
     }
+
     .testHeader {
       display: flex;
       justify-content: space-between;
@@ -263,6 +301,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       cursor: pointer;
       user-select: none;
     }
+
     .badge {
       font-size: 0.85em;
       padding: 2px 8px;
@@ -270,8 +309,10 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       border: 1px solid var(--border);
       white-space: nowrap;
     }
+
     .badge.pass { color: var(--ok); }
     .badge.fail { color: var(--bad); }
+
     pre {
       margin: 8px 0 0 0;
       padding: 8px;
@@ -281,6 +322,48 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    .wizardHidden {
+      display: none;
+    }
+
+    .wizardSteps {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .wizardStep {
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      font-size: 0.85em;
+    }
+
+    .wizardStep.active {
+      color: var(--ok);
+      border-color: var(--ok);
+    }
+
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .previewBox {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      background: var(--vscode-textCodeBlock-background);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.9em;
+      max-height: 260px;
+      overflow: auto;
     }
   </style>
 </head>
@@ -319,11 +402,112 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
       <div class="title" style="font-weight: 600;">Teacher</div>
       <div class="muted" style="margin-bottom: 8px;">
-        Use the recorder terminal to generate many tests quickly.
+        Use the setup wizard to scaffold a fresh suite, or the recorder terminal to generate many tests quickly.
       </div>
       <div class="row">
+        <button id="btnWizard" class="warning" disabled>Start Setup Wizard</button>
         <button id="btnRecord" class="secondary" disabled>Record Tests</button>
-        <span class="muted" id="textRecordHint"></span>
+      </div>
+      <div class="muted" id="textRecordHint" style="margin-top: 8px;"></div>
+    </div>
+
+    <div class="card wizardHidden" id="wizardCard">
+      <div class="title">Setup Wizard</div>
+      <div class="wizardSteps">
+        <span class="wizardStep" id="stepPill1">1. Template</span>
+        <span class="wizardStep" id="stepPill2">2. Details</span>
+        <span class="wizardStep" id="stepPill3">3. Suites</span>
+        <span class="wizardStep" id="stepPill4">4. Preview</span>
+      </div>
+
+      <div id="wizardStep1">
+        <div class="subtitle">Choose a template</div>
+        <label for="wizardPreset">Preset</label>
+        <select id="wizardPreset">
+          <option value="java-basic">Java basic</option>
+          <option value="java-checkstyle">Java with CheckStyle</option>
+          <option value="python-basic">Python basic</option>
+          <option value="c-basic">C basic</option>
+          <option value="custom">Custom</option>
+        </select>
+        <div class="muted">This fills sensible defaults for compile/run commands and suite layout.</div>
+      </div>
+
+      <div id="wizardStep2" class="wizardHidden">
+        <div class="subtitle">Project details</div>
+        <div class="col">
+          <div>
+            <label for="wizardTestsRoot">Test root folder</label>
+            <input id="wizardTestsRoot" />
+          </div>
+          <div class="grid2">
+            <div>
+              <label for="wizardPracticalName">Practical name</label>
+              <input id="wizardPracticalName" />
+            </div>
+            <div>
+              <label for="wizardCourseCode">Course code</label>
+              <input id="wizardCourseCode" />
+            </div>
+          </div>
+          <div>
+            <label for="wizardSrcDir">Source directory</label>
+            <input id="wizardSrcDir" />
+          </div>
+          <div>
+            <label for="wizardCompileCommand">Build command</label>
+            <input id="wizardCompileCommand" />
+          </div>
+          <div>
+            <label for="wizardRunCommand">Run command</label>
+            <input id="wizardRunCommand" />
+          </div>
+          <div>
+            <label for="wizardIncludeCheckStyle">Include CheckStyle scaffold</label>
+            <select id="wizardIncludeCheckStyle">
+              <option value="false">No</option>
+              <option value="true">Yes</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div id="wizardStep3" class="wizardHidden">
+        <div class="subtitle">Suite structure</div>
+        <label for="wizardSuitePreset">Suite layout</label>
+        <select id="wizardSuitePreset">
+          <option value="single">Single suite</option>
+          <option value="options">Option-style nested suites</option>
+          <option value="custom">Custom list</option>
+        </select>
+
+        <div style="margin-top:8px;">
+          <label for="wizardSuiteNames">Suite names</label>
+          <textarea id="wizardSuiteNames"></textarea>
+          <div class="muted">
+            For custom lists, use comma-separated paths like:
+            <code>basic</code> or <code>option1/words, option1/names</code>
+          </div>
+        </div>
+      </div>
+
+      <div id="wizardStep4" class="wizardHidden">
+        <div class="subtitle">Preview</div>
+        <div class="muted">These folders and files will be created.</div>
+        <div class="previewBox" id="wizardPreview"></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="row" style="justify-content: space-between;">
+        <div class="row">
+          <button id="btnWizardCancel" class="secondary">Cancel</button>
+        </div>
+        <div class="row">
+          <button id="btnWizardBack" class="secondary">Back</button>
+          <button id="btnWizardNext">Next</button>
+          <button id="btnWizardCreate" class="warning wizardHidden">Create Suite</button>
+        </div>
       </div>
     </div>
 
@@ -346,7 +530,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         <div class="toggle">
           <div>
             <div class="title" style="margin: 0;">Teacher Mode</div>
-            <div class="muted">Enables recording tools and assumes current solution is correct.</div>
+            <div class="muted">Enables the setup wizard and recording tools.</div>
           </div>
           <button id="btnTeacherMode" class="secondary">Enter</button>
         </div>
@@ -368,6 +552,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
       btnRun: document.getElementById('btnRun'),
       btnAdd: document.getElementById('btnAdd'),
+      btnWizard: document.getElementById('btnWizard'),
       btnRecord: document.getElementById('btnRecord'),
       textRecordHint: document.getElementById('textRecordHint'),
 
@@ -377,6 +562,34 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       resultsList: document.getElementById('resultsList'),
 
       btnTeacherMode: document.getElementById('btnTeacherMode'),
+
+      wizardCard: document.getElementById('wizardCard'),
+      stepPill1: document.getElementById('stepPill1'),
+      stepPill2: document.getElementById('stepPill2'),
+      stepPill3: document.getElementById('stepPill3'),
+      stepPill4: document.getElementById('stepPill4'),
+      wizardStep1: document.getElementById('wizardStep1'),
+      wizardStep2: document.getElementById('wizardStep2'),
+      wizardStep3: document.getElementById('wizardStep3'),
+      wizardStep4: document.getElementById('wizardStep4'),
+
+      wizardPreset: document.getElementById('wizardPreset'),
+      wizardTestsRoot: document.getElementById('wizardTestsRoot'),
+      wizardPracticalName: document.getElementById('wizardPracticalName'),
+      wizardCourseCode: document.getElementById('wizardCourseCode'),
+      wizardSrcDir: document.getElementById('wizardSrcDir'),
+      wizardCompileCommand: document.getElementById('wizardCompileCommand'),
+      wizardRunCommand: document.getElementById('wizardRunCommand'),
+      wizardIncludeCheckStyle: document.getElementById('wizardIncludeCheckStyle'),
+
+      wizardSuitePreset: document.getElementById('wizardSuitePreset'),
+      wizardSuiteNames: document.getElementById('wizardSuiteNames'),
+      wizardPreview: document.getElementById('wizardPreview'),
+
+      btnWizardCancel: document.getElementById('btnWizardCancel'),
+      btnWizardBack: document.getElementById('btnWizardBack'),
+      btnWizardNext: document.getElementById('btnWizardNext'),
+      btnWizardCreate: document.getElementById('btnWizardCreate'),
     };
 
     let state = {
@@ -388,6 +601,73 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       recording: false,
       results: []
     };
+
+    let wizardOpen = false;
+    let wizardStep = 1;
+
+    function defaultTestsRoot() {
+      if (state.rootDir) return state.rootDir;
+      return 'Tests';
+    }
+
+    function applyPreset(preset) {
+      if (preset === 'java-basic') {
+        els.wizardPracticalName.value = 'Practical 1';
+        els.wizardCourseCode.value = 'CS1003';
+        els.wizardSrcDir.value = 'src';
+        els.wizardCompileCommand.value = 'javac *.java';
+        els.wizardRunCommand.value = 'java Main';
+        els.wizardIncludeCheckStyle.value = 'false';
+        els.wizardSuitePreset.value = 'single';
+        els.wizardSuiteNames.value = 'basic';
+      } else if (preset === 'java-checkstyle') {
+        els.wizardPracticalName.value = 'Practical 1';
+        els.wizardCourseCode.value = 'CS1003';
+        els.wizardSrcDir.value = 'src';
+        els.wizardCompileCommand.value = 'javac *.java';
+        els.wizardRunCommand.value = 'java Main';
+        els.wizardIncludeCheckStyle.value = 'true';
+        els.wizardSuitePreset.value = 'single';
+        els.wizardSuiteNames.value = 'basic';
+      } else if (preset === 'python-basic') {
+        els.wizardPracticalName.value = 'Practical 1';
+        els.wizardCourseCode.value = 'CS1003';
+        els.wizardSrcDir.value = 'src';
+        els.wizardCompileCommand.value = 'python3 -m py_compile *.py';
+        els.wizardRunCommand.value = 'python3 main.py';
+        els.wizardIncludeCheckStyle.value = 'false';
+        els.wizardSuitePreset.value = 'single';
+        els.wizardSuiteNames.value = 'basic';
+      } else if (preset === 'c-basic') {
+        els.wizardPracticalName.value = 'Practical 1';
+        els.wizardCourseCode.value = 'CS1003';
+        els.wizardSrcDir.value = 'src';
+        els.wizardCompileCommand.value = 'gcc -Wall -Wextra -o program *.c';
+        els.wizardRunCommand.value = './program';
+        els.wizardIncludeCheckStyle.value = 'false';
+        els.wizardSuitePreset.value = 'single';
+        els.wizardSuiteNames.value = 'basic';
+      }
+      updateSuiteNamesFromPreset();
+      renderWizard();
+    }
+
+    function updateSuiteNamesFromPreset() {
+      const preset = els.wizardSuitePreset.value;
+      if (preset === 'single') {
+        els.wizardSuiteNames.value = 'basic';
+      } else if (preset === 'options') {
+        els.wizardSuiteNames.value = 'option1/words, option1/names';
+      }
+      updateWizardPreview();
+    }
+
+    function parseSuiteNames(raw) {
+      return String(raw || '')
+        .split(',')
+        .map(x => x.trim())
+        .filter(Boolean);
+    }
 
     function suiteMetaText(s) {
       const parts = [];
@@ -403,7 +683,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     function computeReady() {
       if (!state.rootDir) return false;
-      if (!state.suites || state.suites.length === 0) return true; // fallback to root
+      if (!state.suites || state.suites.length === 0) return true;
       return !!state.selectedSuiteDir;
     }
 
@@ -429,7 +709,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       els.pillPassFail.textContent = \`\${pct}%\`;
       els.progressFill.style.width = \`\${pct}%\`;
 
-      // Render expandable tests + include summary lines
       const items = [];
       for (const r of state.results) {
         if (r.kind === 'summary') {
@@ -437,12 +716,11 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
           continue;
         }
 
-        // test
         const label = \`\${r.type} — \${r.name}\`;
         const badgeClass = r.outcome === 'pass' ? 'pass' : 'fail';
         const badgeText = r.outcome.toUpperCase();
-
         const detailsText = (r.details || []).join('\\n').trim();
+
         items.push(\`
           <div class="test">
             <details>
@@ -459,8 +737,106 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       els.resultsList.innerHTML = items.join('');
     }
 
+    function updateWizardPreview() {
+      const root = (els.wizardTestsRoot.value || defaultTestsRoot()).trim();
+      const practicalName = (els.wizardPracticalName.value || 'Practical 1').trim();
+      const courseCode = (els.wizardCourseCode.value || 'CS1003').trim();
+      const srcDir = (els.wizardSrcDir.value || 'src').trim();
+      const suiteNames = parseSuiteNames(els.wizardSuiteNames.value);
+      const includeCheckStyle = els.wizardIncludeCheckStyle.value === 'true';
+
+      const lines = [];
+      lines.push(root + '/');
+      lines.push('  practical.config');
+      lines.push('');
+      lines.push('  practical.config contents:');
+      lines.push('    [info]');
+      lines.push(\`    practical = \${practicalName}\`);
+      lines.push(\`    course = \${courseCode}\`);
+      lines.push(\`    srcdir = \${srcDir}\`);
+      lines.push('');
+
+      for (const suite of suiteNames) {
+        lines.push(\`  \${suite}/\`);
+        lines.push('    build-all.sh');
+        lines.push('    prog-run.sh');
+      }
+
+      if (includeCheckStyle) {
+        lines.push('');
+        lines.push('  CheckStyle/');
+        lines.push('    build-all.sh');
+        lines.push('    test-CheckStyle.sh');
+        lines.push('    cs1002_checks.xml');
+        lines.push('  libs/');
+        lines.push('    README.txt');
+      }
+
+      els.wizardPreview.textContent = lines.join('\\n');
+    }
+
+    function openWizard() {
+      wizardOpen = true;
+      wizardStep = 1;
+      els.wizardCard.classList.remove('wizardHidden');
+
+      els.wizardTestsRoot.value = defaultTestsRoot();
+      applyPreset(els.wizardPreset.value);
+      renderWizard();
+    }
+
+    function closeWizard() {
+      wizardOpen = false;
+      wizardStep = 1;
+      els.wizardCard.classList.add('wizardHidden');
+      renderWizard();
+    }
+
+    function renderWizard() {
+      const steps = [els.stepPill1, els.stepPill2, els.stepPill3, els.stepPill4];
+      const pages = [els.wizardStep1, els.wizardStep2, els.wizardStep3, els.wizardStep4];
+
+      steps.forEach((el, idx) => el.classList.toggle('active', idx + 1 === wizardStep));
+      pages.forEach((el, idx) => el.classList.toggle('wizardHidden', idx + 1 !== wizardStep));
+
+      els.btnWizardBack.disabled = wizardStep === 1;
+      els.btnWizardNext.classList.toggle('wizardHidden', wizardStep === 4);
+      els.btnWizardCreate.classList.toggle('wizardHidden', wizardStep !== 4);
+
+      updateWizardPreview();
+    }
+
+    function nextWizardStep() {
+      if (wizardStep < 4) {
+        wizardStep += 1;
+        renderWizard();
+      }
+    }
+
+    function backWizardStep() {
+      if (wizardStep > 1) {
+        wizardStep -= 1;
+        renderWizard();
+      }
+    }
+
+    function submitWizard() {
+      const payload = {
+        testsRoot: els.wizardTestsRoot.value.trim(),
+        practicalName: els.wizardPracticalName.value.trim(),
+        courseCode: els.wizardCourseCode.value.trim(),
+        srcDir: els.wizardSrcDir.value.trim(),
+        compileCommand: els.wizardCompileCommand.value.trim(),
+        runCommand: els.wizardRunCommand.value.trim(),
+        suiteNamesRaw: els.wizardSuiteNames.value.trim(),
+        includeCheckStyle: els.wizardIncludeCheckStyle.value === 'true'
+      };
+
+      vscode.postMessage({ type: 'submitWizard', payload });
+      closeWizard();
+    }
+
     function render() {
-      // Setup
       if (state.rootDir) {
         els.textRootDir.textContent = state.rootDir;
         els.pillReady.textContent = computeReady() ? 'Ready' : 'Pick suite';
@@ -469,7 +845,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         els.pillReady.textContent = 'No folder';
       }
 
-      // Suites
       els.suiteSelect.innerHTML = '';
       if (state.suites && state.suites.length > 0) {
         els.suiteSelect.disabled = false;
@@ -498,26 +873,29 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         els.textSuiteMeta.textContent = '';
       }
 
-      // Actions
       const ready = computeReady();
       els.btnRun.disabled = !ready;
       els.btnAdd.disabled = !ready;
 
-      // Teacher
       els.btnTeacherMode.textContent = state.teacherMode ? 'Exit' : 'Enter';
+      els.btnWizard.disabled = !state.teacherMode;
       els.btnRecord.disabled = !ready || !state.teacherMode;
       els.btnRecord.textContent = state.recording ? 'Stop Recording' : 'Record Tests';
       els.textRecordHint.textContent = state.teacherMode
-        ? (state.recording ? 'Recorder terminal is active.' : 'Opens recorder terminal.')
-        : 'Enable Teacher Mode to record.';
+        ? (state.recording ? 'Recorder terminal is active.' : 'Use the wizard to scaffold suites, or record tests into the selected suite.')
+        : 'Enable Teacher Mode to use the setup wizard and recording tools.';
+
+      if (!state.teacherMode && wizardOpen) {
+        closeWizard();
+      }
 
       renderResults();
     }
 
-    // Events
     els.btnSelectDir.addEventListener('click', () => vscode.postMessage({ type: 'selectDirectory' }));
     els.btnRun.addEventListener('click', () => vscode.postMessage({ type: 'runTests' }));
     els.btnAdd.addEventListener('click', () => vscode.postMessage({ type: 'addTest' }));
+    els.btnWizard.addEventListener('click', openWizard);
 
     els.btnTeacherMode.addEventListener('click', () => {
       vscode.postMessage({ type: 'toggleTeacherMode', on: !state.teacherMode });
@@ -531,6 +909,25 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       const suitePath = els.suiteSelect.value;
       if (suitePath) vscode.postMessage({ type: 'setSuite', suitePath });
     });
+
+    els.wizardPreset.addEventListener('change', () => applyPreset(els.wizardPreset.value));
+    els.wizardSuitePreset.addEventListener('change', updateSuiteNamesFromPreset);
+
+    [
+      els.wizardTestsRoot,
+      els.wizardPracticalName,
+      els.wizardCourseCode,
+      els.wizardSrcDir,
+      els.wizardCompileCommand,
+      els.wizardRunCommand,
+      els.wizardIncludeCheckStyle,
+      els.wizardSuiteNames
+    ].forEach(el => el.addEventListener('input', updateWizardPreview));
+
+    els.btnWizardCancel.addEventListener('click', closeWizard);
+    els.btnWizardBack.addEventListener('click', backWizardStep);
+    els.btnWizardNext.addEventListener('click', nextWizardStep);
+    els.btnWizardCreate.addEventListener('click', submitWizard);
 
     window.addEventListener('message', (event) => {
       const msg = event.data;

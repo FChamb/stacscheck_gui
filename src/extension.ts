@@ -1,4 +1,8 @@
 // extension.ts
+// Single-pane GUI via Webview Control Panel.
+// Teacher Mode Recorder captures stdin typed in recorder terminal during the run.
+// Recording ON => stdin becomes .in, stdout becomes .out.
+// Teacher Mode also exposes an in-panel startup wizard to scaffold a fresh stacscheck suite.
 
 import * as vscode from 'vscode';
 import { exec, spawn, ChildProcessWithoutNullStreams } from 'child_process';
@@ -10,10 +14,20 @@ import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
 import { parseStacscheckOutput } from './parser';
 import { ControlPanelViewProvider } from './controlPanelView';
 
+type WizardPayload = {
+  testsRoot: string;
+  practicalName: string;
+  courseCode: string;
+  srcDir: string;
+  compileCommand: string;
+  runCommand: string;
+  suiteNamesRaw: string;
+  includeCheckStyle: boolean;
+};
+
 export function activate(context: vscode.ExtensionContext) {
   const provider = new StacscheckTreeProvider();
 
-  // Webview: single pane GUI
   const controlPanel = new ControlPanelViewProvider(context, provider);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ControlPanelViewProvider.viewType, controlPanel, {
@@ -21,10 +35,8 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Push updates to the control panel whenever state changes
   provider.onDidChangeTreeData(() => controlPanel.postState());
 
-  // Recorder terminal
   const recorder = new RecorderTerminal(provider);
 
   context.subscriptions.push(
@@ -49,6 +61,16 @@ export function activate(context: vscode.ExtensionContext) {
       recorder.setRecording(false);
       controlPanel.postState();
       vscode.window.showInformationMessage('Teacher Mode disabled.');
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.createSuiteFromWizard', async (payload: WizardPayload) => {
+      if (!provider.isTeacherMode()) {
+        vscode.window.showErrorMessage('Enable Teacher Mode first.');
+        return;
+      }
+
+      await createSuiteFromWizard(provider, payload);
+      controlPanel.postState();
     }),
 
     vscode.commands.registerCommand('stacscheck-gui.startRecording', async () => {
@@ -95,36 +117,38 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
 
   if (!folderUris?.length) return;
 
-  const selected = folderUris[0].fsPath;
-  provider.setSelectedRootDirectory(selected);
+  await loadSuiteState(provider, folderUris[0].fsPath);
+}
 
-  const suites = await findSuites(selected);
+async function setSuite(provider: StacscheckTreeProvider, suitePath: string): Promise<void> {
+  provider.setSelectedSuiteDirectory(suitePath);
+}
+
+async function loadSuiteState(
+  provider: StacscheckTreeProvider,
+  rootDir: string,
+  preferredSuite?: string
+): Promise<void> {
+  provider.setSelectedRootDirectory(rootDir);
+
+  const suites = await findSuites(rootDir);
   provider.setSuites(suites);
 
-  const exact = suites.find(s => s.absPath === selected);
+  if (preferredSuite && suites.some(s => s.absPath === preferredSuite)) {
+    provider.setSelectedSuiteDirectory(preferredSuite);
+    return;
+  }
+
+  const exact = suites.find(s => s.absPath === rootDir);
   if (exact) {
-    provider.setSelectedSuiteDirectory(selected);
-    vscode.window.showInformationMessage(`Selected suite: ${exact.label}`);
+    provider.setSelectedSuiteDirectory(rootDir);
     return;
   }
 
   if (suites.length === 1) {
     provider.setSelectedSuiteDirectory(suites[0].absPath);
-    vscode.window.showInformationMessage(`Selected suite: ${suites[0].label}`);
     return;
   }
-
-  if (suites.length > 1) {
-    vscode.window.showInformationMessage('Suites detected. Select one in the Suite dropdown.');
-  } else {
-    vscode.window.showWarningMessage(
-      'No suites detected. You can still run stacscheck on this folder, but it’s usually better to pick a folder containing .in/.out or test scripts.'
-    );
-  }
-}
-
-async function setSuite(provider: StacscheckTreeProvider, suitePath: string): Promise<void> {
-  provider.setSelectedSuiteDirectory(suitePath);
 }
 
 function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
@@ -140,6 +164,212 @@ function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
     return false;
   }
   return true;
+}
+
+// ----------------- In-panel wizard submit handler -----------------
+
+async function createSuiteFromWizard(provider: StacscheckTreeProvider, payload: WizardPayload): Promise<void> {
+  const testsRoot = (payload.testsRoot || '').trim();
+  const practicalName = (payload.practicalName || '').trim();
+  const courseCode = (payload.courseCode || '').trim();
+  const srcDir = (payload.srcDir || '').trim();
+  const compileCommand = (payload.compileCommand || '').trim();
+  const runCommand = (payload.runCommand || '').trim();
+  const suiteNames = parseSuiteNames(payload.suiteNamesRaw || '');
+
+  if (!testsRoot || !practicalName || !courseCode || !srcDir || !compileCommand || !runCommand) {
+    vscode.window.showErrorMessage('Wizard is missing one or more required fields.');
+    return;
+  }
+
+  if (!suiteNames.length) {
+    vscode.window.showErrorMessage('Please provide at least one suite name.');
+    return;
+  }
+
+  const created = await createSuiteWizardFiles({
+    testsRoot,
+    practicalName,
+    courseCode,
+    srcDir,
+    compileCommand,
+    runCommand,
+    suiteNames,
+    includeCheckStyle: !!payload.includeCheckStyle
+  });
+
+  await loadSuiteState(provider, testsRoot, created.firstSuitePath);
+
+  vscode.window.showInformationMessage(
+    `Created stacscheck scaffold in ${testsRoot}${created.includeCheckStyle ? ' with CheckStyle scaffold' : ''}.`
+  );
+}
+
+function parseSuiteNames(raw: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const part of raw.split(',')) {
+    const cleaned = part.trim().replace(/[\\\\]+/g, '/');
+    if (!cleaned) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    result.push(cleaned);
+  }
+
+  return result;
+}
+
+async function createSuiteWizardFiles(args: {
+  testsRoot: string;
+  practicalName: string;
+  courseCode: string;
+  srcDir: string;
+  compileCommand: string;
+  runCommand: string;
+  suiteNames: string[];
+  includeCheckStyle: boolean;
+}): Promise<{ firstSuitePath: string; includeCheckStyle: boolean }> {
+  await fs.promises.mkdir(args.testsRoot, { recursive: true });
+
+  const practicalConfigPath = path.join(args.testsRoot, 'practical.config');
+  await writeFileIfMissing(
+    practicalConfigPath,
+    `[info]
+practical = ${args.practicalName}
+course = ${args.courseCode}
+srcdir = ${args.srcDir}
+`
+  );
+
+  const firstSuitePath = path.join(args.testsRoot, args.suiteNames[0]);
+
+  for (const suiteName of args.suiteNames) {
+    const suiteDir = path.join(args.testsRoot, ...suiteName.split('/'));
+    await fs.promises.mkdir(suiteDir, { recursive: true });
+
+    const buildAllPath = path.join(suiteDir, 'build-all.sh');
+    const progRunPath = path.join(suiteDir, 'prog-run.sh');
+
+    await writeFileIfMissing(
+      buildAllPath,
+      `#!/bin/bash
+set -e
+
+${args.compileCommand}
+`
+    );
+
+    await writeFileIfMissing(
+      progRunPath,
+      `#!/bin/bash
+
+${args.runCommand}
+`
+    );
+
+    await makeExecutable(buildAllPath);
+    await makeExecutable(progRunPath);
+  }
+
+  if (args.includeCheckStyle) {
+    const checkStyleDir = path.join(args.testsRoot, 'CheckStyle');
+    const libsDir = path.join(args.testsRoot, 'libs');
+
+    await fs.promises.mkdir(checkStyleDir, { recursive: true });
+    await fs.promises.mkdir(libsDir, { recursive: true });
+
+    const buildAllPath = path.join(checkStyleDir, 'build-all.sh');
+    const testScriptPath = path.join(checkStyleDir, 'test-CheckStyle.sh');
+    const xmlPath = path.join(checkStyleDir, 'cs1002_checks.xml');
+    const libsReadmePath = path.join(libsDir, 'README.txt');
+
+    await writeFileIfMissing(
+      buildAllPath,
+      `#!/bin/bash
+set -e
+
+${args.compileCommand}
+`
+    );
+
+    await writeFileIfMissing(
+      testScriptPath,
+      `#!/bin/bash
+
+JAR_PATH="$TESTDIR/../libs/checkstyle-11.0.1-all.jar"
+CONFIG_PATH="$TESTDIR/cs1002_checks.xml"
+
+if [ ! -f "$JAR_PATH" ]; then
+    echo "Missing CheckStyle jar: $JAR_PATH"
+    echo "Place checkstyle-11.0.1-all.jar inside the libs directory."
+    exit 1
+fi
+
+result=$(java -jar "$JAR_PATH" -c "$CONFIG_PATH" .)
+echo "$result"
+
+pass=$'Starting audit...\\nAudit done.'
+if [ "$result" != "$pass" ]; then
+    echo "Code does not adhere to style conventions."
+    exit 1
+else
+    echo "Code adheres to style conventions."
+    exit 0
+fi
+`
+    );
+
+    await writeFileIfMissing(
+      xmlPath,
+      `<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<module name="Checker">
+    <module name="TreeWalker">
+        <module name="AvoidStarImport"/>
+        <module name="UnusedImports"/>
+        <module name="FinalLocalVariable"/>
+    </module>
+</module>
+`
+    );
+
+    await writeFileIfMissing(
+      libsReadmePath,
+      `Place the CheckStyle jar here if you want to use the CheckStyle scaffold.
+
+Expected file name:
+checkstyle-11.0.1-all.jar
+`
+    );
+
+    await makeExecutable(buildAllPath);
+    await makeExecutable(testScriptPath);
+  }
+
+  return {
+    firstSuitePath,
+    includeCheckStyle: args.includeCheckStyle
+  };
+}
+
+async function writeFileIfMissing(filePath: string, content: string): Promise<void> {
+  const exists = await pathExists(filePath);
+  if (!exists) {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, content, 'utf8');
+  }
+}
+
+async function makeExecutable(filePath: string): Promise<void> {
+  try {
+    await fs.promises.chmod(filePath, 0o755);
+  } catch {
+    // Best effort only.
+  }
 }
 
 // ----------------- Running stacscheck -----------------
@@ -170,9 +400,9 @@ async function runStacscheck(provider: StacscheckTreeProvider): Promise<void> {
     if (err) {
       vscode.window.showErrorMessage(
         `stacscheck finished with an error.\n` +
-          `Command: ${command}\n` +
-          `Working directory: ${workingDir}\n` +
-          `stderr: ${stderr || '(none)'}`
+        `Command: ${command}\n` +
+        `Working directory: ${workingDir}\n` +
+        `stderr: ${stderr || '(none)'}`
       );
     }
 
@@ -343,7 +573,6 @@ class RecorderTerminal implements vscode.Pseudoterminal {
   onDidClose?: vscode.Event<void> = this.closeEmitter.event;
 
   private terminal: vscode.Terminal | undefined;
-
   private recording = false;
   private lineBuffer = '';
 
@@ -384,13 +613,13 @@ class RecorderTerminal implements vscode.Pseudoterminal {
   handleInput(data: string): void {
     if (this.busy && this.child && !this.stdinClosed) {
       for (const ch of data) {
-        if (ch === '\u0004') {
+        if (ch === '\\u0004') {
           this.stdinClosed = true;
           try { this.child.stdin.end(); } catch {}
           this.writeLine('^D');
           continue;
         }
-        if (ch === '\u0003') {
+        if (ch === '\\u0003') {
           this.writeLine('^C');
           try { this.child.kill('SIGINT'); } catch {}
           continue;
@@ -403,12 +632,15 @@ class RecorderTerminal implements vscode.Pseudoterminal {
     }
 
     for (const ch of data) {
-      if (ch === '\r') {
+      if (ch === '\\r') {
         const cmd = this.lineBuffer.trim();
         this.writeLine('');
         this.lineBuffer = '';
 
-        if (!cmd) { this.prompt(); continue; }
+        if (!cmd) {
+          this.prompt();
+          continue;
+        }
 
         this.runCommand(cmd).catch(err => {
           const msg = err instanceof Error ? err.message : String(err);
@@ -418,17 +650,17 @@ class RecorderTerminal implements vscode.Pseudoterminal {
         continue;
       }
 
-      if (ch === '\u0003') {
+      if (ch === '\\u0003') {
         this.writeLine('^C');
         this.lineBuffer = '';
         this.prompt();
         continue;
       }
 
-      if (ch === '\u007f') {
+      if (ch === '\\u007f') {
         if (this.lineBuffer.length > 0) {
           this.lineBuffer = this.lineBuffer.slice(0, -1);
-          this.write('\b \b');
+          this.write('\\b \\b');
         }
         continue;
       }
@@ -441,9 +673,11 @@ class RecorderTerminal implements vscode.Pseudoterminal {
   private write(text: string): void {
     this.writeEmitter.fire(text);
   }
+
   private writeLine(text: string): void {
-    this.writeEmitter.fire(text + '\r\n');
+    this.writeEmitter.fire(text + '\\r\\n');
   }
+
   private prompt(): void {
     this.write('> ');
   }
@@ -494,11 +728,11 @@ class RecorderTerminal implements vscode.Pseudoterminal {
     const exitCode: number | null = await new Promise(resolve => child.on('close', code => resolve(code)));
 
     if (stderr.trim()) {
-      this.writeLine('\r\n[stderr]');
+      this.writeLine('\\r\\n[stderr]');
       this.writeLine(stderr.trimEnd());
     }
     if (exitCode !== 0) {
-      this.writeLine(`\r\n[exit] code ${exitCode}`);
+      this.writeLine(`\\r\\n[exit] code ${exitCode}`);
     }
 
     if (this.recording) {
@@ -511,7 +745,7 @@ class RecorderTerminal implements vscode.Pseudoterminal {
       await fs.promises.writeFile(inPath, ensureTrailingNewline(this.recordedStdin), 'utf8');
       await fs.promises.writeFile(outPath, ensureTrailingNewline(stdout), 'utf8');
 
-      this.writeLine(`\r\n[saved] ${path.basename(inPath)} + ${path.basename(outPath)}`);
+      this.writeLine(`\\r\\n[saved] ${path.basename(inPath)} + ${path.basename(outPath)}`);
       vscode.window.showInformationMessage(`Recorded test: ${path.basename(inPath)} / ${path.basename(outPath)}`);
     }
 
