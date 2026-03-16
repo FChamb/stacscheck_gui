@@ -1,13 +1,3 @@
-// controlPanelView.ts
-// Full sidebar GUI (webview) for stacscheck.
-// Includes:
-// - Setup
-// - Suite selection
-// - Actions
-// - Teacher tools
-// - Results
-// - In-panel multi-step startup wizard with presets + live preview
-
 import * as vscode from 'vscode';
 import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
 import { TestResult } from './types';
@@ -19,6 +9,8 @@ type ControlState = {
   targetDir?: string;
   teacherMode: boolean;
   recording: boolean;
+  recorderInput: string;
+  recorderStatus: string;
   results: TestResult[];
 };
 
@@ -43,51 +35,48 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this.getHtml(webviewView.webview);
 
     webviewView.webview.onDidReceiveMessage(async (msg) => {
-      try {
-        switch (msg?.type) {
-          case 'selectDirectory':
-            await vscode.commands.executeCommand('stacscheck-gui.selectDirectory');
-            break;
+      switch (msg?.type) {
+        case 'selectDirectory':
+          await vscode.commands.executeCommand('stacscheck-gui.selectDirectory');
+          break;
 
-          case 'runTests':
-            await vscode.commands.executeCommand('stacscheck-gui.runTests');
-            break;
+        case 'runTests':
+          await vscode.commands.executeCommand('stacscheck-gui.runTests');
+          break;
 
-          case 'addTest':
-            await vscode.commands.executeCommand('stacscheck-gui.addTest');
-            break;
+        case 'addTest':
+          await vscode.commands.executeCommand('stacscheck-gui.addTest');
+          break;
 
-          case 'toggleTeacherMode': {
-            const on = !!msg?.on;
-            await vscode.commands.executeCommand(on ? 'stacscheck-gui.enterTeacherMode' : 'stacscheck-gui.exitTeacherMode');
-            break;
+        case 'toggleTeacherMode':
+          await vscode.commands.executeCommand(
+            msg?.on ? 'stacscheck-gui.enterTeacherMode' : 'stacscheck-gui.exitTeacherMode'
+          );
+          break;
+
+        case 'toggleRecording':
+          await vscode.commands.executeCommand(
+            msg?.on ? 'stacscheck-gui.startRecording' : 'stacscheck-gui.stopRecording'
+          );
+          break;
+
+        case 'setSuite':
+          if (msg?.suitePath) {
+            await vscode.commands.executeCommand('stacscheck-gui.setSuite', msg.suitePath);
           }
+          break;
 
-          case 'toggleRecording': {
-            const on = !!msg?.on;
-            await vscode.commands.executeCommand(on ? 'stacscheck-gui.startRecording' : 'stacscheck-gui.stopRecording');
-            break;
-          }
+        case 'setRecorderInput':
+          await vscode.commands.executeCommand('stacscheck-gui.setRecorderInput', String(msg.value ?? ''));
+          break;
 
-          case 'setSuite': {
-            const suitePath = String(msg?.suitePath ?? '');
-            if (suitePath) {
-              await vscode.commands.executeCommand('stacscheck-gui.setSuite', suitePath);
-            }
-            break;
-          }
+        case 'submitWizard':
+          await vscode.commands.executeCommand('stacscheck-gui.createSuiteFromWizard', msg.payload);
+          break;
 
-          case 'submitWizard':
-            await vscode.commands.executeCommand('stacscheck-gui.createSuiteFromWizard', msg.payload);
-            break;
-
-          case 'requestState':
-            this.postState();
-            break;
-        }
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        vscode.window.showErrorMessage(`Control panel error: ${message}`);
+        case 'requestState':
+          this.postState();
+          break;
       }
     });
 
@@ -96,7 +85,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
   public postState(): void {
     if (!this.view) return;
-    this.view.webview.postMessage({ type: 'state', state: this.getState() });
+    void this.view.webview.postMessage({ type: 'state', state: this.getState() });
   }
 
   private getState(): ControlState {
@@ -107,6 +96,8 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       targetDir: this.provider.getTargetTestDirectory(),
       teacherMode: this.provider.isTeacherMode(),
       recording: this.provider.isRecording(),
+      recorderInput: this.provider.getRecorderInput(),
+      recorderStatus: this.provider.getRecorderStatus(),
       results: this.provider.getTestResults()
     };
   }
@@ -324,9 +315,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       word-break: break-word;
     }
 
-    .wizardHidden {
-      display: none;
-    }
+    .wizardHidden { display: none; }
 
     .wizardSteps {
       display: flex;
@@ -382,9 +371,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     <div class="card">
       <div class="title">Suite</div>
-      <div class="muted" style="margin-bottom: 8px;">
-        Pick the suite folder where tests will be created and run.
-      </div>
+      <div class="muted" style="margin-bottom: 8px;">Pick the suite folder where tests will be created and run.</div>
       <select id="suiteSelect" disabled>
         <option value="">No suites</option>
       </select>
@@ -402,12 +389,19 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
       <div class="title" style="font-weight: 600;">Teacher</div>
       <div class="muted" style="margin-bottom: 8px;">
-        Use the setup wizard to scaffold a fresh suite, or the recorder terminal to generate many tests quickly.
+        Use the setup wizard to scaffold a fresh suite, or use the recorder terminal to capture a command. The stdin box is optional.
       </div>
+
       <div class="row">
         <button id="btnWizard" class="warning" disabled>Start Setup Wizard</button>
         <button id="btnRecord" class="secondary" disabled>Record Tests</button>
       </div>
+
+      <div style="margin-top: 10px;">
+        <label for="recorderInput">Optional stdin for next recorded test</label>
+        <textarea id="recorderInput" placeholder="Leave blank if the program uses flags only. Fill this in only if the recorded command should read stdin."></textarea>
+      </div>
+
       <div class="muted" id="textRecordHint" style="margin-top: 8px;"></div>
     </div>
 
@@ -485,8 +479,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
           <label for="wizardSuiteNames">Suite names</label>
           <textarea id="wizardSuiteNames"></textarea>
           <div class="muted">
-            For custom lists, use comma-separated paths like:
-            <code>basic</code> or <code>option1/words, option1/names</code>
+            Use comma-separated paths like <code>basic</code> or <code>option1/words, option1/names</code>.
           </div>
         </div>
       </div>
@@ -500,9 +493,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       <div class="divider"></div>
 
       <div class="row" style="justify-content: space-between;">
-        <div class="row">
-          <button id="btnWizardCancel" class="secondary">Cancel</button>
-        </div>
+        <button id="btnWizardCancel" class="secondary">Cancel</button>
         <div class="row">
           <button id="btnWizardBack" class="secondary">Back</button>
           <button id="btnWizardNext">Next</button>
@@ -536,7 +527,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         </div>
       </div>
     </div>
-
   </div>
 
   <script nonce="${nonce}">
@@ -546,23 +536,19 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       btnSelectDir: document.getElementById('btnSelectDir'),
       pillReady: document.getElementById('pillReady'),
       textRootDir: document.getElementById('textRootDir'),
-
       suiteSelect: document.getElementById('suiteSelect'),
       textSuiteMeta: document.getElementById('textSuiteMeta'),
-
       btnRun: document.getElementById('btnRun'),
       btnAdd: document.getElementById('btnAdd'),
       btnWizard: document.getElementById('btnWizard'),
       btnRecord: document.getElementById('btnRecord'),
+      recorderInput: document.getElementById('recorderInput'),
       textRecordHint: document.getElementById('textRecordHint'),
-
       textSummary: document.getElementById('textSummary'),
       pillPassFail: document.getElementById('pillPassFail'),
       progressFill: document.getElementById('progressFill'),
       resultsList: document.getElementById('resultsList'),
-
       btnTeacherMode: document.getElementById('btnTeacherMode'),
-
       wizardCard: document.getElementById('wizardCard'),
       stepPill1: document.getElementById('stepPill1'),
       stepPill2: document.getElementById('stepPill2'),
@@ -572,7 +558,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       wizardStep2: document.getElementById('wizardStep2'),
       wizardStep3: document.getElementById('wizardStep3'),
       wizardStep4: document.getElementById('wizardStep4'),
-
       wizardPreset: document.getElementById('wizardPreset'),
       wizardTestsRoot: document.getElementById('wizardTestsRoot'),
       wizardPracticalName: document.getElementById('wizardPracticalName'),
@@ -581,11 +566,9 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       wizardCompileCommand: document.getElementById('wizardCompileCommand'),
       wizardRunCommand: document.getElementById('wizardRunCommand'),
       wizardIncludeCheckStyle: document.getElementById('wizardIncludeCheckStyle'),
-
       wizardSuitePreset: document.getElementById('wizardSuitePreset'),
       wizardSuiteNames: document.getElementById('wizardSuiteNames'),
       wizardPreview: document.getElementById('wizardPreview'),
-
       btnWizardCancel: document.getElementById('btnWizardCancel'),
       btnWizardBack: document.getElementById('btnWizardBack'),
       btnWizardNext: document.getElementById('btnWizardNext'),
@@ -599,6 +582,8 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       targetDir: undefined,
       teacherMode: false,
       recording: false,
+      recorderInput: '',
+      recorderStatus: '',
       results: []
     };
 
@@ -606,8 +591,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     let wizardStep = 1;
 
     function defaultTestsRoot() {
-      if (state.rootDir) return state.rootDir;
-      return 'Tests';
+      return state.rootDir || 'Tests';
     }
 
     function applyPreset(preset) {
@@ -663,10 +647,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     }
 
     function parseSuiteNames(raw) {
-      return String(raw || '')
-        .split(',')
-        .map(x => x.trim())
-        .filter(Boolean);
+      return String(raw || '').split(',').map(x => x.trim()).filter(Boolean);
     }
 
     function suiteMetaText(s) {
@@ -696,7 +677,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     function renderResults() {
       const { pass, total, pct } = computePassFail(state.results);
-
       if (!total) {
         els.textSummary.textContent = 'No results yet.';
         els.pillPassFail.textContent = '—';
@@ -730,8 +710,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
               </summary>
               <pre>\${escapeHtml(detailsText)}</pre>
             </details>
-          </div>
-        \`);
+          </div>\`);
       }
 
       els.resultsList.innerHTML = items.join('');
@@ -779,7 +758,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       wizardOpen = true;
       wizardStep = 1;
       els.wizardCard.classList.remove('wizardHidden');
-
       els.wizardTestsRoot.value = defaultTestsRoot();
       applyPreset(els.wizardPreset.value);
       renderWizard();
@@ -831,7 +809,6 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         suiteNamesRaw: els.wizardSuiteNames.value.trim(),
         includeCheckStyle: els.wizardIncludeCheckStyle.value === 'true'
       };
-
       vscode.postMessage({ type: 'submitWizard', payload });
       closeWizard();
     }
@@ -881,8 +858,14 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       els.btnWizard.disabled = !state.teacherMode;
       els.btnRecord.disabled = !ready || !state.teacherMode;
       els.btnRecord.textContent = state.recording ? 'Stop Recording' : 'Record Tests';
+
+      els.recorderInput.disabled = !state.teacherMode;
+      if (els.recorderInput.value !== state.recorderInput) {
+        els.recorderInput.value = state.recorderInput || '';
+      }
+
       els.textRecordHint.textContent = state.teacherMode
-        ? (state.recording ? 'Recorder terminal is active.' : 'Use the wizard to scaffold suites, or record tests into the selected suite.')
+        ? (state.recorderStatus || 'Recording disabled.')
         : 'Enable Teacher Mode to use the setup wizard and recording tools.';
 
       if (!state.teacherMode && wizardOpen) {
@@ -903,6 +886,10 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     els.btnRecord.addEventListener('click', () => {
       vscode.postMessage({ type: 'toggleRecording', on: !state.recording });
+    });
+
+    els.recorderInput.addEventListener('input', () => {
+      vscode.postMessage({ type: 'setRecorderInput', value: els.recorderInput.value });
     });
 
     els.suiteSelect.addEventListener('change', () => {
@@ -956,6 +943,8 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 function getNonce(): string {
   let text = '';
   const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) text += possible.charAt(Math.floor(Math.random() * possible.length));
+  for (let i = 0; i < 32; i++) {
+    text += possible.charAt(Math.floor(Math.random() * possible.length));
+  }
   return text;
 }

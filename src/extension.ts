@@ -1,11 +1,5 @@
-// extension.ts
-// Single-pane GUI via Webview Control Panel.
-// Teacher Mode Recorder captures stdin typed in recorder terminal during the run.
-// Recording ON => stdin becomes .in, stdout becomes .out.
-// Teacher Mode also exposes an in-panel startup wizard to scaffold a fresh stacscheck suite.
-
 import * as vscode from 'vscode';
-import { exec, spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import { exec, spawn } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,6 +19,11 @@ type WizardPayload = {
   includeCheckStyle: boolean;
 };
 
+type ActiveExecution = {
+  commandLine: string;
+  cwd: string | undefined;
+};
+
 export function activate(context: vscode.ExtensionContext) {
   const provider = new StacscheckTreeProvider();
 
@@ -37,7 +36,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   provider.onDidChangeTreeData(() => controlPanel.postState());
 
-  const recorder = new RecorderTerminal(provider);
+  const recorder = new ShellRecorder(provider);
+  context.subscriptions.push(recorder);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('stacscheck-gui.selectDirectory', async () => {
@@ -52,6 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('stacscheck-gui.enterTeacherMode', async () => {
       provider.setTeacherMode(true);
+      provider.setRecorderStatus('Teacher Mode enabled.');
       controlPanel.postState();
       vscode.window.showInformationMessage('Teacher Mode enabled.');
     }),
@@ -59,8 +60,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('stacscheck-gui.exitTeacherMode', async () => {
       provider.setTeacherMode(false);
       recorder.setRecording(false);
+      provider.setRecorderStatus('Teacher Mode disabled.');
       controlPanel.postState();
       vscode.window.showInformationMessage('Teacher Mode disabled.');
+    }),
+
+    vscode.commands.registerCommand('stacscheck-gui.setRecorderInput', async (value: string) => {
+      provider.setRecorderInput(value ?? '');
+      controlPanel.postState();
     }),
 
     vscode.commands.registerCommand('stacscheck-gui.createSuiteFromWizard', async (payload: WizardPayload) => {
@@ -75,14 +82,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('stacscheck-gui.startRecording', async () => {
       if (!ensureSuiteSelected(provider)) return;
-      provider.setRecording(true);
       recorder.setRecording(true);
+      await recorder.show();
       controlPanel.postState();
-      recorder.show();
     }),
 
     vscode.commands.registerCommand('stacscheck-gui.stopRecording', async () => {
-      provider.setRecording(false);
       recorder.setRecording(false);
       controlPanel.postState();
     }),
@@ -101,8 +106,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
-// ----------------- Directory + suites -----------------
-
 async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<void> {
   const defaultUri = vscode.workspace.workspaceFolders?.[0]?.uri || vscode.Uri.file(os.homedir());
 
@@ -116,7 +119,6 @@ async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<vo
   });
 
   if (!folderUris?.length) return;
-
   await loadSuiteState(provider, folderUris[0].fsPath);
 }
 
@@ -147,7 +149,6 @@ async function loadSuiteState(
 
   if (suites.length === 1) {
     provider.setSelectedSuiteDirectory(suites[0].absPath);
-    return;
   }
 }
 
@@ -165,8 +166,6 @@ function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
   }
   return true;
 }
-
-// ----------------- In-panel wizard submit handler -----------------
 
 async function createSuiteFromWizard(provider: StacscheckTreeProvider, payload: WizardPayload): Promise<void> {
   const testsRoot = (payload.testsRoot || '').trim();
@@ -242,7 +241,7 @@ srcdir = ${args.srcDir}
 `
   );
 
-  const firstSuitePath = path.join(args.testsRoot, args.suiteNames[0]);
+  const firstSuitePath = path.join(args.testsRoot, ...args.suiteNames[0].split('/'));
 
   for (const suiteName of args.suiteNames) {
     const suiteDir = path.join(args.testsRoot, ...suiteName.split('/'));
@@ -368,11 +367,9 @@ async function makeExecutable(filePath: string): Promise<void> {
   try {
     await fs.promises.chmod(filePath, 0o755);
   } catch {
-    // Best effort only.
+    // ignore
   }
 }
-
-// ----------------- Running stacscheck -----------------
 
 async function runStacscheck(provider: StacscheckTreeProvider): Promise<void> {
   const testDir = provider.getTargetTestDirectory();
@@ -465,8 +462,6 @@ function isDirectory(p: string): boolean {
     return false;
   }
 }
-
-// ----------------- Add Custom Test -----------------
 
 async function addCustomTest(provider: StacscheckTreeProvider): Promise<void> {
   const targetDir = provider.getTargetTestDirectory();
@@ -563,199 +558,220 @@ function ensureTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`;
 }
 
-// ----------------- Recorder Pseudo Terminal -----------------
-
-class RecorderTerminal implements vscode.Pseudoterminal {
-  private writeEmitter = new vscode.EventEmitter<string>();
-  onDidWrite: vscode.Event<string> = this.writeEmitter.event;
-
-  private closeEmitter = new vscode.EventEmitter<void>();
-  onDidClose?: vscode.Event<void> = this.closeEmitter.event;
-
+class ShellRecorder implements vscode.Disposable {
   private terminal: vscode.Terminal | undefined;
+  private readonly terminalName = 'stacscheck Recorder';
+  private readonly activeExecutions = new Map<vscode.TerminalShellExecution, ActiveExecution>();
+  private readonly disposables: vscode.Disposable[] = [];
   private recording = false;
-  private lineBuffer = '';
-
-  private busy = false;
-  private child: ChildProcessWithoutNullStreams | undefined;
-  private recordedStdin = '';
-  private stdinClosed = false;
-
   private recordCounter = 1;
 
-  constructor(private provider: StacscheckTreeProvider) {}
+  constructor(private readonly provider: StacscheckTreeProvider) {
+    this.disposables.push(
+      vscode.window.onDidChangeTerminalShellIntegration((event) => {
+        if (event.terminal !== this.terminal) return;
 
-  show(): void {
-    if (!this.terminal) {
-      this.terminal = vscode.window.createTerminal({ name: 'stacscheck Recorder', pty: this });
+        this.provider.setRecorderStatus(
+          event.shellIntegration
+            ? 'Recorder terminal ready. Run a command there to capture it.'
+            : 'Recorder terminal opened. Waiting for shell integration...'
+        );
+      }),
+
+      vscode.window.onDidStartTerminalShellExecution((event) => {
+        if (!this.recording || event.terminal !== this.terminal) return;
+
+        const cwd = extractExecutionCwd(event);
+        this.activeExecutions.set(event.execution, {
+          commandLine: event.execution.commandLine.value,
+          cwd
+        });
+
+        this.provider.setRecorderStatus(`Captured command: ${event.execution.commandLine.value}`);
+      }),
+
+      vscode.window.onDidEndTerminalShellExecution((event) => {
+        if (event.terminal !== this.terminal) return;
+
+        const active = this.activeExecutions.get(event.execution);
+        if (!active) return;
+
+        void this.finishExecution(active, event.exitCode);
+        this.activeExecutions.delete(event.execution);
+      })
+    );
+  }
+
+  async show(): Promise<void> {
+    const term = this.getOrCreateTerminal();
+    term.show(true);
+
+    if (term.shellIntegration) {
+      this.provider.setRecorderStatus('Recorder terminal ready. Run a command there to capture it.');
+      return;
     }
-    this.terminal.show(true);
+
+    this.provider.setRecorderStatus('Recorder terminal opened. Waiting for shell integration...');
+    await delay(1500);
+
+    if (this.terminal === term && !term.shellIntegration) {
+      this.provider.setRecorderStatus(
+        'Shell integration is not active yet. Commands will not be captured until it activates.'
+      );
+    }
   }
 
   setRecording(on: boolean): void {
     this.recording = on;
     this.provider.setRecording(on);
+
+    if (on) {
+      this.provider.setRecorderStatus('Recording enabled. Run one command in the stacscheck Recorder terminal.');
+    } else {
+      this.provider.setRecorderStatus('Recording disabled.');
+    }
   }
 
-  open(_initialDimensions: vscode.TerminalDimensions | undefined): void {
-    this.writeLine('stacscheck Recorder Terminal');
-    this.writeLine('Type a command and press Enter.');
-    this.writeLine('If Recording is ON: stdin you type/paste becomes the .in, stdout becomes the .out.');
-    this.writeLine('Tip: Press Ctrl+D to send EOF if your program reads until EOF.');
-    this.writeLine('');
-    this.prompt();
+  dispose(): void {
+    for (const disposable of this.disposables) {
+      disposable.dispose();
+    }
   }
 
-  close(): void {
-    this.closeEmitter.fire();
+  private getOrCreateTerminal(): vscode.Terminal {
+    if (!this.terminal || this.terminal.exitStatus) {
+      this.terminal = vscode.window.createTerminal({
+        name: this.terminalName,
+        cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+      });
+    }
+    return this.terminal;
   }
 
-  handleInput(data: string): void {
-    if (this.busy && this.child && !this.stdinClosed) {
-      for (const ch of data) {
-        if (ch === '\\u0004') {
-          this.stdinClosed = true;
-          try { this.child.stdin.end(); } catch {}
-          this.writeLine('^D');
-          continue;
-        }
-        if (ch === '\\u0003') {
-          this.writeLine('^C');
-          try { this.child.kill('SIGINT'); } catch {}
-          continue;
-        }
-        this.recordedStdin += ch;
-        this.write(ch);
-        try { this.child.stdin.write(ch); } catch {}
-      }
+  private async finishExecution(active: ActiveExecution, exitCode: number | undefined): Promise<void> {
+    const suiteDir = this.provider.getTargetTestDirectory();
+    if (!suiteDir) {
+      this.provider.setRecorderStatus('Command ended, but no suite is selected.');
       return;
     }
 
-    for (const ch of data) {
-      if (ch === '\\r') {
-        const cmd = this.lineBuffer.trim();
-        this.writeLine('');
-        this.lineBuffer = '';
-
-        if (!cmd) {
-          this.prompt();
-          continue;
-        }
-
-        this.runCommand(cmd).catch(err => {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.writeLine(`[error] ${msg}`);
-          this.prompt();
-        });
-        continue;
-      }
-
-      if (ch === '\\u0003') {
-        this.writeLine('^C');
-        this.lineBuffer = '';
-        this.prompt();
-        continue;
-      }
-
-      if (ch === '\\u007f') {
-        if (this.lineBuffer.length > 0) {
-          this.lineBuffer = this.lineBuffer.slice(0, -1);
-          this.write('\\b \\b');
-        }
-        continue;
-      }
-
-      this.lineBuffer += ch;
-      this.write(ch);
-    }
-  }
-
-  private write(text: string): void {
-    this.writeEmitter.fire(text);
-  }
-
-  private writeLine(text: string): void {
-    this.writeEmitter.fire(text + '\\r\\n');
-  }
-
-  private prompt(): void {
-    this.write('> ');
-  }
-
-  private async runCommand(cmd: string): Promise<void> {
-    if (!this.provider.isTeacherMode()) {
-      this.writeLine('[info] Enable Teacher Mode first.');
-      this.prompt();
-      return;
-    }
-    if (!ensureSuiteSelected(this.provider)) {
-      this.writeLine('[info] Select a suite folder first.');
-      this.prompt();
+    if (!this.recording) {
+      this.provider.setRecorderStatus(`Command finished: ${active.commandLine}`);
       return;
     }
 
-    const suiteDir = this.provider.getTargetTestDirectory()!;
-    const workingDir = await resolveWorkingDir(suiteDir, ['src', 'source']);
-    if (!workingDir) {
-      this.writeLine('[error] No src/ or source/ directory found for this project.');
-      this.prompt();
+    const rerunCwd = await this.resolveRecorderCwd(active.cwd, suiteDir);
+    if (!rerunCwd) {
+      this.provider.setRecorderStatus('Could not determine a valid working directory for rerunning the recorded command.');
       return;
     }
 
-    this.busy = true;
-    this.recordedStdin = '';
-    this.stdinClosed = false;
+    const stdinText = this.provider.getRecorderInput();
+    const rerun = await runCommandForRecording(active.commandLine, rerunCwd, stdinText);
 
-    this.writeLine(`[cwd] ${workingDir}`);
-    this.writeLine(`[cmd] ${cmd}`);
+    const base = `recorded-${String(this.recordCounter++).padStart(3, '0')}`;
+    const uniqueBase = await ensureUniqueBaseName(suiteDir, base);
 
-    const child = spawn(cmd, { cwd: workingDir, shell: true });
-    this.child = child;
+    const inPath = path.join(suiteDir, `${uniqueBase}.in`);
+    const outPath = path.join(suiteDir, `${uniqueBase}.out`);
+
+    await fs.promises.writeFile(inPath, ensureTrailingNewline(stdinText), 'utf8');
+    await fs.promises.writeFile(outPath, ensureTrailingNewline(rerun.stdout), 'utf8');
+
+    const exitText = rerun.exitCode === null || rerun.exitCode === undefined
+      ? 'unknown exit code'
+      : `exit ${rerun.exitCode}`;
+
+    if (rerun.stderr.trim()) {
+      vscode.window.showWarningMessage(
+        `Recorded test saved, but the rerun command wrote to stderr: ${truncateOneLine(rerun.stderr)}`
+      );
+    }
+
+    if (exitCode !== undefined && rerun.exitCode !== exitCode) {
+      this.provider.setRecorderStatus(
+        `Saved ${path.basename(inPath)} and ${path.basename(outPath)}. Note: rerun exit code (${String(rerun.exitCode)}) differed from terminal exit code (${exitCode}).`
+      );
+    } else {
+      this.provider.setRecorderStatus(`Saved ${path.basename(inPath)} and ${path.basename(outPath)} (${exitText}).`);
+    }
+
+    vscode.window.showInformationMessage(`Recorded test: ${path.basename(inPath)} / ${path.basename(outPath)}`);
+  }
+
+  private async resolveRecorderCwd(executionCwd: string | undefined, suiteDir: string): Promise<string | undefined> {
+    if (executionCwd && isDirectory(executionCwd)) {
+      return executionCwd;
+    }
+
+    const fallback = await resolveWorkingDir(suiteDir, ['src', 'source']);
+    return fallback;
+  }
+}
+
+function extractExecutionCwd(event: vscode.TerminalShellExecutionStartEvent): string | undefined {
+  const shellIntegration = event.terminal.shellIntegration;
+  if (!shellIntegration) return undefined;
+
+  try {
+    const cwdValue = shellIntegration.cwd;
+    if (typeof cwdValue === 'string') return cwdValue;
+    if (cwdValue && typeof cwdValue.fsPath === 'string') return cwdValue.fsPath;
+  } catch {
+    // ignore
+  }
+
+  return undefined;
+}
+
+async function runCommandForRecording(
+  command: string,
+  cwd: string,
+  stdinText: string
+): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, { cwd, shell: true });
 
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', d => {
-      const s = d.toString();
-      stdout += s;
-      this.write(s);
+    child.stdout.on('data', (d) => {
+      stdout += d.toString();
     });
 
-    child.stderr.on('data', d => {
+    child.stderr.on('data', (d) => {
       stderr += d.toString();
     });
 
-    const exitCode: number | null = await new Promise(resolve => child.on('close', code => resolve(code)));
+    child.on('close', (code) => {
+      resolve({
+        stdout: normalizeProgramOutput(stdout),
+        stderr: normalizeProgramOutput(stderr),
+        exitCode: code
+      });
+    });
 
-    if (stderr.trim()) {
-      this.writeLine('\\r\\n[stderr]');
-      this.writeLine(stderr.trimEnd());
+    try {
+      child.stdin.write(stdinText);
+      child.stdin.end();
+    } catch {
+      // ignore
     }
-    if (exitCode !== 0) {
-      this.writeLine(`\\r\\n[exit] code ${exitCode}`);
-    }
-
-    if (this.recording) {
-      const base = `recorded-${String(this.recordCounter++).padStart(3, '0')}`;
-      const uniqueBase = await ensureUniqueBaseName(suiteDir, base);
-
-      const inPath = path.join(suiteDir, `${uniqueBase}.in`);
-      const outPath = path.join(suiteDir, `${uniqueBase}.out`);
-
-      await fs.promises.writeFile(inPath, ensureTrailingNewline(this.recordedStdin), 'utf8');
-      await fs.promises.writeFile(outPath, ensureTrailingNewline(stdout), 'utf8');
-
-      this.writeLine(`\\r\\n[saved] ${path.basename(inPath)} + ${path.basename(outPath)}`);
-      vscode.window.showInformationMessage(`Recorded test: ${path.basename(inPath)} / ${path.basename(outPath)}`);
-    }
-
-    this.child = undefined;
-    this.busy = false;
-    this.prompt();
-  }
+  });
 }
 
-// ----------------- Suite discovery WITH metadata -----------------
+function normalizeProgramOutput(raw: string): string {
+  return raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function truncateOneLine(value: string, max = 120): string {
+  const flat = value.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max) + '…' : flat;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function findSuites(rootDir: string): Promise<SuiteInfo[]> {
   const results: SuiteInfo[] = [];
@@ -776,7 +792,6 @@ async function findSuites(rootDir: string): Promise<SuiteInfo[]> {
 
     const inputCount = lower.filter(f => f.endsWith('.in')).length;
     const outputCount = lower.filter(f => f.endsWith('.out')).length;
-
     const hasProgRun = lower.includes('prog-run.sh');
     const hasBuildAll = lower.includes('build-all.sh');
     const testShCount = lower.filter(f => f.startsWith('test-') && f.endsWith('.sh')).length;

@@ -1,8 +1,3 @@
-// treeProvider.ts
-// State store for the extension (suites, selected suite, teacher mode, recording, results).
-// Historically this was also a TreeDataProvider; we keep the event emitter + structure
-// so other components can react to changes, but we no longer need to render a tree.
-
 import * as vscode from 'vscode';
 import { TestResult } from './types';
 
@@ -17,7 +12,6 @@ export type SuiteInfo = {
 };
 
 export class StacscheckTreeProvider {
-  // We keep the same change event name so existing calls still work.
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -30,11 +24,13 @@ export class StacscheckTreeProvider {
   private teacherMode = false;
   private recording = false;
 
+  private recorderInput = '';
+  private recorderStatus = 'Recording is off.';
+
   refresh(): void {
     this._onDidChangeTreeData.fire();
   }
 
-  // ---------- Root dir / suites ----------
   setSelectedRootDirectory(dirPath: string): void {
     this.selectedRootDir = dirPath;
     this.selectedSuiteDir = undefined;
@@ -49,7 +45,9 @@ export class StacscheckTreeProvider {
   setSuites(suites: SuiteInfo[]): void {
     this.suites = suites;
     const stillValid = this.selectedSuiteDir && suites.some(s => s.absPath === this.selectedSuiteDir);
-    if (!stillValid) this.selectedSuiteDir = undefined;
+    if (!stillValid) {
+      this.selectedSuiteDir = undefined;
+    }
     this.refresh();
   }
 
@@ -71,7 +69,6 @@ export class StacscheckTreeProvider {
     return this.selectedSuiteDir ?? this.selectedRootDir;
   }
 
-  // ---------- Results ----------
   setTestResults(results: TestResult[]): void {
     this.testResults = results;
     this.refresh();
@@ -81,10 +78,11 @@ export class StacscheckTreeProvider {
     return this.testResults;
   }
 
-  // ---------- Teacher mode ----------
   setTeacherMode(on: boolean): void {
     this.teacherMode = on;
-    if (!on) this.recording = false;
+    if (!on) {
+      this.recording = false;
+    }
     this.refresh();
   }
 
@@ -99,5 +97,23 @@ export class StacscheckTreeProvider {
 
   isRecording(): boolean {
     return this.recording;
+  }
+
+  setRecorderInput(value: string): void {
+    this.recorderInput = value;
+    this.refresh();
+  }
+
+  getRecorderInput(): string {
+    return this.recorderInput;
+  }
+
+  setRecorderStatus(value: string): void {
+    this.recorderStatus = value;
+    this.refresh();
+  }
+
+  getRecorderStatus(): string {
+    return this.recorderStatus;
   }
 }
