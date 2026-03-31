@@ -219,6 +219,11 @@ function parseSuiteNames(raw: string): string[] {
   return result;
 }
 
+function getCheckstyleConfigFileName(courseCode: string): string {
+  const stem = courseCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return `${stem || 'course'}_checks.xml`;
+}
+
 async function createSuiteWizardFiles(args: {
   testsRoot: string;
   practicalName: string;
@@ -274,13 +279,14 @@ ${args.runCommand}
   if (args.includeCheckStyle) {
     const checkStyleDir = path.join(args.testsRoot, 'CheckStyle');
     const libsDir = path.join(args.testsRoot, 'libs');
+    const checkstyleConfigFileName = getCheckstyleConfigFileName(args.courseCode);
 
     await fs.promises.mkdir(checkStyleDir, { recursive: true });
     await fs.promises.mkdir(libsDir, { recursive: true });
 
     const buildAllPath = path.join(checkStyleDir, 'build-all.sh');
     const testScriptPath = path.join(checkStyleDir, 'test-CheckStyle.sh');
-    const xmlPath = path.join(checkStyleDir, 'cs1002_checks.xml');
+    const xmlPath = path.join(checkStyleDir, checkstyleConfigFileName);
     const libsReadmePath = path.join(libsDir, 'README.txt');
 
     await writeFileIfMissing(
@@ -297,7 +303,7 @@ ${args.compileCommand}
       `#!/bin/bash
 
 JAR_PATH="$TESTDIR/../libs/checkstyle-11.0.1-all.jar"
-CONFIG_PATH="$TESTDIR/cs1002_checks.xml"
+CONFIG_PATH="$TESTDIR/${checkstyleConfigFileName}"
 
 if [ ! -f "$JAR_PATH" ]; then
     echo "Missing CheckStyle jar: $JAR_PATH"
@@ -321,17 +327,138 @@ fi
 
     await writeFileIfMissing(
       xmlPath,
-      `<?xml version="1.0"?>
-<!DOCTYPE module PUBLIC
-    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
-    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE module PUBLIC "-//Puppy Crawl//DTD Check Configuration 1.3//EN" "http://www.puppycrawl.com/dtds/configuration_1_3.dtd">
 
+<!--
+    Checkstyle-Configuration: St Andrews Checkstyle Configuration
+    Description: Presents the naming conventions that are used within NDS research group.
+-->
 <module name="Checker">
-    <module name="TreeWalker">
-        <module name="AvoidStarImport"/>
-        <module name="UnusedImports"/>
-        <module name="FinalLocalVariable"/>
+  <property name="severity" value="warning"/>
+  <property name="fileExtensions" value="java, properties, xml"/>
+
+  <module name="TreeWalker">
+    <module name="JavadocMethod">
+      <property name="scope" value="public"/>
+      <property name="allowUndeclaredRTE" value="true"/>
+      <property name="severity" value="ignore"/>
     </module>
+    <module name="JavadocType">
+      <property name="scope" value="public"/>
+      <property name="severity" value="ignore"/>
+    </module>
+    <module name="JavadocVariable">
+      <property name="scope" value="public"/>
+      <property name="severity" value="ignore"/>
+    </module>
+    <module name="JavadocStyle">
+      <property name="checkEmptyJavadoc" value="true"/>
+      <property name="checkHtml" value="false"/>
+    </module>
+    <module name="ConstantName"/>
+    <module name="LocalFinalVariableName">
+      <property name="format" value="^[a-z][a-zA-Z0-9_]*$"/>
+    </module>
+    <module name="LocalVariableName">
+      <property name="format" value="^[a-z][a-zA-Z0-9_]*$"/>
+    </module>
+    <module name="MemberName">
+      <property name="format" value="^[a-z][a-zA-Z0-9_]*$"/>
+    </module>
+    <module name="MethodName"/>
+    <module name="PackageName"/>
+    <module name="ParameterName">
+      <property name="format" value="^[a-z][a-zA-Z0-9_]*$"/>
+    </module>
+    <module name="StaticVariableName">
+      <property name="format" value="^[a-z][a-zA-Z0-9_]*$"/>
+    </module>
+    <module name="TypeName">
+      <property name="format" value="^[a-zA-Z0-9]*$"/>
+      <property name="tokens" value="INTERFACE_DEF"/>
+    </module>
+    <module name="AvoidStarImport"/>
+    <module name="IllegalImport"/>
+    <module name="RedundantImport"/>
+    <module name="MethodLength">
+      <property name="severity" value="ignore"/>
+      <metadata name="net.sf.eclipsecs.core.lastEnabledSeverity" value="inherit"/>
+    </module>
+    <module name="ParameterNumber">
+      <property name="severity" value="ignore"/>
+      <metadata name="net.sf.eclipsecs.core.lastEnabledSeverity" value="inherit"/>
+    </module>
+    <module name="EmptyForIteratorPad"/>
+    <module name="GenericWhitespace"/>
+    <module name="Indentation"/>
+    <module name="MethodParamPad"/>
+    <module name="NoWhitespaceAfter"/>
+    <module name="NoWhitespaceBefore"/>
+    <module name="OperatorWrap"/>
+    <module name="ParenPad"/>
+    <module name="TypecastParenPad"/>
+    <module name="WhitespaceAfter"/>
+    <module name="WhitespaceAround">
+      <property name="tokens" value="ASSIGN,BAND,BAND_ASSIGN,BOR,BOR_ASSIGN,BSR,BSR_ASSIGN,BXOR,BXOR_ASSIGN,COLON,DIV,DIV_ASSIGN,EQUAL,GE,GT,LAND,LCURLY,LE,LITERAL_ASSERT,LITERAL_CATCH,LITERAL_DO,LITERAL_ELSE,LITERAL_FINALLY,LITERAL_FOR,LITERAL_IF,LITERAL_RETURN,LITERAL_SYNCHRONIZED,LITERAL_TRY,LITERAL_WHILE,LOR,LT,MINUS,MINUS_ASSIGN,MOD,MOD_ASSIGN,NOT_EQUAL,PLUS,PLUS_ASSIGN,QUESTION,SL,SLIST,SL_ASSIGN,SR,SR_ASSIGN,STAR,STAR_ASSIGN,LITERAL_ASSERT,TYPE_EXTENSION_AND,WILDCARD_TYPE"/>
+    </module>
+    <module name="ModifierOrder"/>
+    <module name="RedundantModifier"/>
+    <module name="AvoidNestedBlocks"/>
+    <module name="EmptyBlock">
+      <property name="tokens" value="LITERAL_DO,LITERAL_ELSE,LITERAL_FINALLY,LITERAL_IF,LITERAL_FOR,LITERAL_TRY,LITERAL_WHILE,STATIC_INIT"/>
+    </module>
+    <module name="LeftCurly"/>
+    <module name="NeedBraces"/>
+    <module name="EmptyStatement"/>
+    <module name="EqualsHashCode"/>
+    <module name="IllegalInstantiation"/>
+    <module name="InnerAssignment"/>
+    <module name="MagicNumber">
+        <property name="severity" value="ignore"/>
+    </module>
+    <module name="MissingSwitchDefault"/>
+    <!--<module name="RedundantThrows"/> -->
+    <module name="SimplifyBooleanExpression"/>
+    <module name="SimplifyBooleanReturn"/>
+    <module name="DesignForExtension">
+      <property name="severity" value="ignore"/>
+      <metadata name="net.sf.eclipsecs.core.lastEnabledSeverity" value="inherit"/>
+    </module>
+    <module name="FinalClass"/>
+    <module name="InterfaceIsType"/>
+    <module name="VisibilityModifier">
+      <property name="protectedAllowed" value="true"/>
+    </module>
+    <module name="ArrayTypeStyle"/>
+    <!--   <module name="FinalParameters"/> -->
+    <module name="TodoComment"/>
+    <module name="UpperEll"/>
+    <module name="EmptyLineSeparator">
+      <property name="allowNoEmptyLineBetweenFields" value="true"/>
+      <property name="allowMultipleEmptyLines" value="false"/>
+      <property name="allowMultipleEmptyLinesInsideClassMembers" value="false"/>
+    </module>
+  </module>
+  <!--  <module name="JavadocPackage"/> -->
+  <module name="NewlineAtEndOfFile">
+    <property name="severity" value="ignore"/>
+  </module>
+  <module name="Translation"/>
+  <module name="FileLength"/>
+  <module name="FileTabCharacter"/>
+  <module name="RegexpSingleline">
+    <metadata name="net.sf.eclipsecs.core.comment" value="Trailing space or tab after text (but allow one space after javadoc *)"/>
+    <property name="format" value="[^*][\\s\\t]$"/>
+    <property name="message" value="Line has trailing spaces or tabs."/>
+    <property name="severity" value="ignore"/>
+  </module>
+  <module name="RegexpSingleline">
+    <metadata name="net.sf.eclipsecs.core.comment" value="Space or tab on empty line"/>
+    <property name="format" value="^[\\s\\t]+$"/>
+    <property name="message" value="Line has trailing spaces or tabs."/>
+    <!--<property name="severity" value="ignore"/>-->
+  </module>
 </module>
 `
     );
