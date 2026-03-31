@@ -186,6 +186,11 @@ async function createSuiteFromWizard(provider: StacscheckTreeProvider, payload: 
     return;
   }
 
+  function getCheckstyleConfigFileName(courseCode: string): string {
+    const stem = courseCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return `${stem || 'course'}_checks.xml`;
+  }
+
   const created = await createSuiteWizardFiles({
     testsRoot,
     practicalName,

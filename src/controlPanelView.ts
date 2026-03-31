@@ -716,6 +716,15 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
       els.resultsList.innerHTML = items.join('');
     }
 
+    function getCheckstyleConfigFileName(courseCode) {
+      const stem = String(courseCode || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+      return \`\${stem || 'course'}_checks.xml\`;
+    }
+
     function updateWizardPreview() {
       const root = (els.wizardTestsRoot.value || defaultTestsRoot()).trim();
       const practicalName = (els.wizardPracticalName.value || 'Practical 1').trim();
@@ -746,7 +755,7 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
         lines.push('  CheckStyle/');
         lines.push('    build-all.sh');
         lines.push('    test-CheckStyle.sh');
-        lines.push('    cs1002_checks.xml');
+        lines.push(\`    \${checkstyleConfigFileName}\`);
         lines.push('  libs/');
         lines.push('    README.txt');
       }

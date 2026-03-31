@@ -1,45 +1,53 @@
-# stacscheck GUI (VS Code Extension)
+# stacscheck GUI
 
-**A Visual Interface for the University of St Andrews' _stacscheck_ Tool**
+A VS Code extension for running and authoring `stacscheck` test suites.
 
-This project is a **VS Code extension** developed as part of my 4th-year dissertation project.  
-It provides a graphical interface for running and reviewing results from the `stacscheck` program — a command-line tool used in the School of Computer Science to automatically test student code submissions.
-
-The goal is to make `stacscheck` easier, faster, and more intuitive to use, especially for students who prefer working in VS Code rather than the terminal.
-
----
+This project was developed as part of a dissertation project at the University of St Andrews. It provides a graphical interface for `stacscheck`. The extension is designed to make the tool easier to use for students running tests and for lecturers creating and maintaining test suites.
 
 ## Features
 
-- **Tree View Interface** in VS Code for running tests
-  - Select a test directory directly from within the IDE
-  - Run tests with a single click (`Run Tests`)
-  - View all test results in an expandable/collapsible tree structure
-  - Colour-coded pass/fail icons using VS Code’s native testing theme
-- **Inline test authoring**
-  - Use the `Add Custom Test` action beneath the results list to create new `.in`/`.expected` pairs without leaving VS Code
-  - Provide the test name, stdin to feed to your program, and the output you expect `stacscheck` to verify
+### Student facing workflow
+- Select a stacscheck test root directly from within VS Code
+- Discover available suites automatically
+- Choose a suite from the control panel
+- Run tests from the IDE
+- View parsed results in a structured, readable format
+- Inspect failing test details without leaving the editor
 
-- **Automatic working directory detection**
-  - Automatically searches for `src/` or `source/` directories relative to your test folder
-  - If not found, prompts you to manually select the correct code directory
+### Test authoring
+- Create custom `.in` / `.out` test pairs directly from the extension
+- Avoid manual file creation for simple test additions
+- Write tests into the currently selected suite
 
-- **Persistent settings**
-  - Remembers the last selected test directory between sessions
+### Teacher mode
+- Enable a dedicated teacher mode inside the control panel
+- Access a multi step startup wizard for scaffolding a new stacscheck suite
+- Create suite folders, `build-all.sh`, `prog-run.sh`, and optional CheckStyle support
+- Use the recorder workflow for rapid test creation
 
-- **CLI Integration**
-  - Executes the official `/cs/studres/Library/stacscheck/stacscheck` binary directly from VS Code
-  - Displays output in the sidebar view
+### Setup script
+- Includes a standalone shell script for lecturers who do not use VS Code
+- Supports both interactive setup and non interactive one command generation
+- Mirrors the same suite scaffolding logic as the VS Code wizard
 
----
+## Extension layout
 
-## Installation
+The extension appears as its own activity bar icon in VS Code and opens a control panel containing:
+- test directory setup
+- suite selection
+- test execution controls
+- teacher mode actions
+- parsed results
+- startup wizard
 
-### Install from VSIX
+## Requirements
 
-1. Download the latest `.vsix` file
-2. In VS Code:
-   - Open the Extensions panel (`Ctrl+Shift+X` / `Cmd+Shift+X`).
-   - Click the `...` menu → **Install from VSIX...**
-   - Select the `.vsix` file.
-3. The extension will appear as **“stacscheck GUI”** in the activity bar.
+The extension assumes:
+- Visual Studio Code `^1.104.0`
+- access to the `stacscheck` executable
+- a project layout where source code lives in `src/` or `source/`, or where the correct code directory can be selected manually
+
+By default, the extension uses:
+
+```text
+/cs/studres/Library/stacscheck/stacscheck

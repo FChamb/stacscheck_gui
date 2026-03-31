@@ -1,7 +1,7 @@
 {
   "name": "stacscheck-gui",
   "displayName": "stacscheck GUI",
-  "description": "A graphical user interface in VS Code for running stacscheck tests",
+  "description": "A VS Code extension for running and authoring stacscheck test suites",
   "version": "0.0.1",
   "publisher": "FChamb",
   "repository": {
@@ -13,6 +13,12 @@
   },
   "categories": [
     "Other"
+  ],
+  "activationEvents": [
+    "onCommand:stacscheck-gui.runTests",
+    "onCommand:stacscheck-gui.selectDirectory",
+    "onCommand:stacscheck-gui.addTest",
+    "onView:stacscheckControl"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -32,6 +38,30 @@
         "command": "stacscheck-gui.addTest",
         "title": "Add Custom stacscheck Test",
         "icon": "$(diff-added)"
+      },
+      {
+        "command": "stacscheck-gui.setSuite",
+        "title": "Set Suite"
+      },
+      {
+        "command": "stacscheck-gui.enterTeacherMode",
+        "title": "Enter Teacher Mode"
+      },
+      {
+        "command": "stacscheck-gui.exitTeacherMode",
+        "title": "Exit Teacher Mode"
+      },
+      {
+        "command": "stacscheck-gui.startRecording",
+        "title": "Start Recording"
+      },
+      {
+        "command": "stacscheck-gui.stopRecording",
+        "title": "Stop Recording"
+      },
+      {
+        "command": "stacscheck-gui.createSuiteFromWizard",
+        "title": "Create Suite From Wizard"
       }
     ],
     "viewsContainers": {
@@ -39,7 +69,7 @@
         {
           "id": "stacscheck-explorer",
           "title": "stacscheck",
-          "icon": "$(pass)"
+          "icon": "media/stacscheck.svg"
         }
       ]
     },
@@ -48,8 +78,7 @@
         {
           "id": "stacscheckControl",
           "name": "Control Panel",
-          "type": "webview",
-          "icon": "$(pass)"
+          "type": "webview"
         }
       ]
     }
@@ -64,7 +93,7 @@
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "^22.19.15",
+    "@types/node": "22.x",
     "@types/vscode": "^1.104.0",
     "@typescript-eslint/eslint-plugin": "^8.42.0",
     "@typescript-eslint/parser": "^8.42.0",
