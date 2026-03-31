@@ -1,17 +1,19 @@
-// parser.ts
-// Converts stacscheck stdout text into a structured shape.
-
 import { Parsed, TestResult, TestCaseResult, SummaryResult, TestOutcome } from './types';
 
 /**
- * stacscheck output (typical) looks like:
- *  * <type> - <name> : pass
- *  * <type> - <name> : fail
- *  ... extra diagnostic lines for the failing test ...
- *  7 out of 10 tests passed
+ * Convert raw stacscheck stdout into a structured representation that can be
+ * displayed in the GUI.
  *
- * This parser is intentionally tolerant: it will keep raw lines even if it can't
- * perfectly match a pattern.
+ * The parser is deliberately tolerant because stacscheck output can vary slightly
+ * between practicals and test types. The main assumption is that each reported test
+ * begins with a header line of the form:
+ *
+ *   * <type> - <name> : pass
+ *   * <type> - <name> : fail
+ *
+ * All following lines are attached to that test until either:
+ * - another test header is found
+ * - a summary line is found
  */
 export function parseStacscheckOutput(output: string): Parsed {
   const lines = output.split(/\r?\n/);
@@ -44,8 +46,10 @@ export function parseStacscheckOutput(output: string): Parsed {
     }
 
     if (current) {
+      // Lines after a test header are considered part of that test's details.
       current.details.push(line);
     } else {
+      // Lines before the first recognised test are kept as header output.
       header.push(line);
     }
   }
@@ -54,13 +58,13 @@ export function parseStacscheckOutput(output: string): Parsed {
 }
 
 /**
- * Matches lines like:
+ * Match stacscheck test result headers.
+ *
+ * Example accepted lines:
  *   * IO - factorial_zero : pass
  *   * CheckStyle - audit : fail
  */
 function parseTestHeaderLine(line: string): { type: string; name: string; outcome: TestOutcome } | undefined {
-  // Allow flexible spaces and tolerate extra text around separators.
-  // Groups: type, name, outcome
   const m = line.match(/^\*\s+(.*?)\s*-\s*(.*?)\s*:\s*(pass|fail)\s*$/i);
   if (!m) return undefined;
 
@@ -72,7 +76,10 @@ function parseTestHeaderLine(line: string): { type: string; name: string; outcom
   return { type, name, outcome };
 }
 
+/**
+ * Recognise the common summary line:
+ *   X out of Y tests passed
+ */
 function parseSummaryLine(line: string): boolean {
-  // Tolerate optional punctuation at end.
   return /^\d+\s+out\s+of\s+\d+\s+tests\s+passed\b/i.test(line.trim());
 }

@@ -2,6 +2,13 @@ import * as vscode from 'vscode';
 import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
 import { TestResult } from './types';
 
+
+/**
+ * Shape of the state object sent from the extension backend to the webview.
+ *
+ * The webview is intentionally dumb: it renders whatever state it receives and
+ * sends user actions back as messages.
+ */
 type ControlState = {
   rootDir?: string;
   suites: SuiteInfo[];
@@ -14,6 +21,16 @@ type ControlState = {
   results: TestResult[];
 };
 
+/**
+ * Main webview based control panel.
+ *
+ * Earlier versions of the project used a tree view. The webview replaced it so the
+ * interface could support:
+ * - grouped controls
+ * - better layout
+ * - teacher mode actions
+ * - the multi-step setup wizard
+ */
 export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'stacscheckControl';
 
@@ -34,6 +51,12 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtml(webviewView.webview);
 
+    /**
+     * Webview -> extension message bridge.
+     *
+     * The webview only emits simple intent messages; all real logic stays in the
+     * extension backend so it can be tested and maintained more easily.
+     */
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       switch (msg?.type) {
         case 'selectDirectory':
@@ -83,6 +106,9 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     this.postState();
   }
 
+  /**
+   * Push the latest shared state into the webview.
+   */
   public postState(): void {
     if (!this.view) return;
     void this.view.webview.postMessage({ type: 'state', state: this.getState() });
@@ -102,6 +128,12 @@ export class ControlPanelViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  /**
+   * Return the full HTML document for the control panel.
+   *
+   * The CSS and client side script are kept inline because the extension is small
+   * and this avoids extra file plumbing for submission.
+   */
   private getHtml(webview: vscode.Webview): string {
     const nonce = getNonce();
 

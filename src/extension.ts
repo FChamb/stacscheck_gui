@@ -8,6 +8,9 @@ import { StacscheckTreeProvider, SuiteInfo } from './treeProvider';
 import { parseStacscheckOutput } from './parser';
 import { ControlPanelViewProvider } from './controlPanelView';
 
+/**
+ * Payload sent from the webview setup wizard when scaffolding a new suite.
+ */
 type WizardPayload = {
   testsRoot: string;
   practicalName: string;
@@ -19,6 +22,13 @@ type WizardPayload = {
   includeCheckStyle: boolean;
 };
 
+/**
+ * Minimal information captured when the recorder sees a shell command start.
+ *
+ * The extension does not trust raw terminal output as the final expected output,
+ * because shell prompts, escape sequences, and echoed input can pollute it.
+ * Instead, it captures the command and reruns it cleanly.
+ */
 type ActiveExecution = {
   commandLine: string;
   cwd: string | undefined;
@@ -27,6 +37,10 @@ type ActiveExecution = {
 export function activate(context: vscode.ExtensionContext) {
   const provider = new StacscheckTreeProvider();
 
+  /**
+   * The main UI is a webview control panel rather than a traditional tree.
+   * This makes the layout much more flexible for teacher mode workflows.
+   */
   const controlPanel = new ControlPanelViewProvider(context, provider);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ControlPanelViewProvider.viewType, controlPanel, {
@@ -34,6 +48,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Re-post updated state whenever the shared provider changes.
   provider.onDidChangeTreeData(() => controlPanel.postState());
 
   const recorder = new ShellRecorder(provider);
@@ -106,6 +121,9 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {}
 
+/**
+ * Ask the user for a test root directory and then rescan for suites.
+ */
 async function selectTestDirectory(provider: StacscheckTreeProvider): Promise<void> {
   const defaultUri = vscode.workspace.workspaceFolders?.[0]?.uri || vscode.Uri.file(os.homedir());
 
@@ -126,6 +144,11 @@ async function setSuite(provider: StacscheckTreeProvider, suitePath: string): Pr
   provider.setSelectedSuiteDirectory(suitePath);
 }
 
+/**
+ * Scan a selected root directory and update the provider with discovered suites.
+ *
+ * If there is an exact suite match or only one suite exists, select it automatically.
+ */
 async function loadSuiteState(
   provider: StacscheckTreeProvider,
   rootDir: string,
@@ -152,6 +175,9 @@ async function loadSuiteState(
   }
 }
 
+/**
+ * Ensure there is an active target suite before running suite-specific actions.
+ */
 function ensureSuiteSelected(provider: StacscheckTreeProvider): boolean {
   const testDir = provider.getTargetTestDirectory();
   if (!testDir) {
@@ -186,11 +212,6 @@ async function createSuiteFromWizard(provider: StacscheckTreeProvider, payload: 
     return;
   }
 
-  function getCheckstyleConfigFileName(courseCode: string): string {
-    const stem = courseCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-    return `${stem || 'course'}_checks.xml`;
-  }
-
   const created = await createSuiteWizardFiles({
     testsRoot,
     practicalName,
@@ -209,6 +230,12 @@ async function createSuiteFromWizard(provider: StacscheckTreeProvider, payload: 
   );
 }
 
+/**
+ * Parse a comma separated suite list from the wizard.
+ *
+ * Example:
+ *   "basic, option1/words, option1/names"
+ */
 function parseSuiteNames(raw: string): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -224,11 +251,28 @@ function parseSuiteNames(raw: string): string[] {
   return result;
 }
 
+/**
+ * Derive a CheckStyle config file name from the entered course code.
+ *
+ * Examples:
+ * - CS1002   -> cs1002_checks.xml
+ * - CS 4099  -> cs_4099_checks.xml
+ */
 function getCheckstyleConfigFileName(courseCode: string): string {
   const stem = courseCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
   return `${stem || 'course'}_checks.xml`;
 }
 
+/**
+ * Create the starter test-suite scaffold used by the in panel wizard.
+ *
+ * This mirrors the standalone shell script so lecturers can scaffold either:
+ * - inside VS Code
+ * - from the terminal
+ *
+ * The generated files are intentionally simple and are meant to be edited further
+ * for the specific practical.
+ */
 async function createSuiteWizardFiles(args: {
   testsRoot: string;
   practicalName: string;
@@ -330,6 +374,7 @@ fi
 `
     );
 
+    // Hardcoded St Andrews style configuration so the scaffold is self contained.
     await writeFileIfMissing(
       xmlPath,
       `<?xml version="1.0" encoding="UTF-8"?>
@@ -499,10 +544,13 @@ async function makeExecutable(filePath: string): Promise<void> {
   try {
     await fs.promises.chmod(filePath, 0o755);
   } catch {
-    // ignore
+    // Best effort only; not all environments require or support this.
   }
 }
 
+/**
+ * Run the actual stacscheck command against the active suite/root.
+ */
 async function runStacscheck(provider: StacscheckTreeProvider): Promise<void> {
   const testDir = provider.getTargetTestDirectory();
   if (!testDir) {
@@ -546,9 +594,16 @@ function getStacscheckCommand(testDir: string): string {
   return `"${stacscheckPath}" "${testDir}"`;
 }
 
+/**
+ * Resolve the code directory from which stacscheck should be run.
+ *
+ * This is necessary because test suites are often stored separately from source code,
+ * while stacscheck expects execution from a source folder such as `src/` or `source/`.
+ */
 async function resolveWorkingDir(testsDir: string, srcNames: string[]): Promise<string | undefined> {
   let dir = testsDir;
 
+  // First search upwards from the selected tests directory.
   for (let i = 0; i < 6; i++) {
     const parent = path.dirname(dir);
     if (!parent || parent === dir) break;
@@ -561,6 +616,7 @@ async function resolveWorkingDir(testsDir: string, srcNames: string[]): Promise<
     dir = parent;
   }
 
+  // Then search workspace folders.
   const wfs = vscode.workspace.workspaceFolders ?? [];
   for (const wf of wfs) {
     for (const name of srcNames) {
@@ -569,6 +625,7 @@ async function resolveWorkingDir(testsDir: string, srcNames: string[]): Promise<
     }
   }
 
+  // Finally, ask the user directly if no reasonable guess was found.
   const picked = await vscode.window.showOpenDialog({
     canSelectMany: false,
     canSelectFiles: false,
@@ -657,6 +714,9 @@ async function writeCustomTestFiles(targetDir: string, rawName: string, input: s
   return { inputPath, outputPath };
 }
 
+/**
+ * Ensure generated test names do not overwrite existing files.
+ */
 async function ensureUniqueBaseName(targetDir: string, base: string): Promise<string> {
   let candidate = base;
   let counter = 1;
@@ -690,6 +750,17 @@ function ensureTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`;
 }
 
+/**
+ * Recorder implementation using a normal VS Code terminal with shell integration.
+ *
+ * Important design choice:
+ * The extension does not trust the terminal's visible output as the final `.out`
+ * file, because the user would otherwise capture shell prompts, echoed input,
+ * and escape sequences. Instead:
+ * 1. capture the command and cwd
+ * 2. rerun that command cleanly with optional stdin
+ * 3. save the rerun stdout as the expected output
+ */
 class ShellRecorder implements vscode.Disposable {
   private terminal: vscode.Terminal | undefined;
   private readonly terminalName = 'stacscheck Recorder';
@@ -841,6 +912,9 @@ class ShellRecorder implements vscode.Disposable {
   }
 }
 
+/**
+ * Best effort retrieval of the working directory from shell integration metadata.
+ */
 function extractExecutionCwd(event: vscode.TerminalShellExecutionStartEvent): string | undefined {
   const shellIntegration = event.terminal.shellIntegration;
   if (!shellIntegration) return undefined;
@@ -850,12 +924,16 @@ function extractExecutionCwd(event: vscode.TerminalShellExecutionStartEvent): st
     if (typeof cwdValue === 'string') return cwdValue;
     if (cwdValue && typeof cwdValue.fsPath === 'string') return cwdValue.fsPath;
   } catch {
-    // ignore
+    // Ignore missing / unsupported metadata.
   }
 
   return undefined;
 }
 
+/**
+ * Rerun the captured command in a clean process so expected output is not polluted
+ * by terminal UI artefacts.
+ */
 async function runCommandForRecording(
   command: string,
   cwd: string,
@@ -887,7 +965,7 @@ async function runCommandForRecording(
       child.stdin.write(stdinText);
       child.stdin.end();
     } catch {
-      // ignore
+      // Some commands may not read stdin at all.
     }
   });
 }
@@ -905,6 +983,18 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Discover suites below a selected root directory.
+ *
+ * This uses heuristic detection because real practicals are not always uniform.
+ * A folder is considered a suite if it contains one or more of the expected
+ * stacscheck artefacts such as:
+ * - .in files
+ * - .out files
+ * - prog-run.sh
+ * - build-all.sh
+ * - test-*.sh
+ */
 async function findSuites(rootDir: string): Promise<SuiteInfo[]> {
   const results: SuiteInfo[] = [];
   const seen = new Set<string>();

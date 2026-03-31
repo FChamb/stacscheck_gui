@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Standalone shell version of the VS Code setup wizard.
+# This exists so lecturers can scaffold suites even if they are not using the extension.
+
 show_help() {
   cat <<'EOF'
 stacscheck Suite Setup Wizard
@@ -88,6 +91,7 @@ prompt_yes_no() {
   done
 }
 
+# Write a file unless it already exists and overwrite was not requested.
 write_file() {
   local file="$1"
   local content="$2"
@@ -110,6 +114,7 @@ make_executable_if_exists() {
   fi
 }
 
+# Match the extension behaviour when deriving a CheckStyle config filename.
 get_checkstyle_config_file_name() {
   local course_code="$1"
   local stem
@@ -120,6 +125,7 @@ get_checkstyle_config_file_name() {
   printf '%s_checks.xml' "$stem"
 }
 
+# Convert a comma separated suite list into clean individual suite paths.
 normalise_suite_names() {
   local raw="$1"
   local out=()
@@ -136,6 +142,7 @@ normalise_suite_names() {
   printf '%s\n' "${out[@]}"
 }
 
+# Presets mirror the defaults offered by the in panel wizard.
 apply_preset_defaults() {
   case "$PRESET" in
     java-basic)
